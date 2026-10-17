@@ -1,212 +1,129 @@
-# Virby - Linux Builder for Nix-darwin
+# Orby
 
-Virby is a module for [nix-darwin](https://github.com/nix-darwin/nix-darwin) that configures a lightweight linux VM as a remote build machine for nix, allowing linux packages to be built on macOS. This project is modeled after [nix-rosetta-builder](https://github.com/cpick/nix-rosetta-builder), which provides a similar service, using lima to manage the VM. Some parts of the code in this repository are directly borrowed and adapted from that project.
+Orby configures an [OrbStack](https://orbstack.dev/) NixOS machine as an
+`aarch64-linux` remote builder for nix-darwin on Apple Silicon. OrbStack owns
+the machine and its disk; Orby creates, provisions, starts, stops, and deletes
+the named machine using `orbctl`.
 
-## Quick Start
+Orby is a fork of [Virby](https://github.com/quinneden/virby-nix-darwin) by
+Quinn Edenfield. It retains Virby's goal of providing a Nix-darwin Linux
+builder while replacing its vfkit/krunkit VM backend with OrbStack.
 
-Add virby to your flake inputs:
+> **Destructive disable:** turning off `services.orby.enable` deletes the
+> Orby-managed machine, including its Nix store and all files in it, as well
+> as Orby's local credentials. Back up anything you need first.
+
+## Setup
+
+Install and start OrbStack under the macOS account that will own the machine.
+The account must be able to run `orbctl` without interaction. By default Orby
+uses the first `orbctl` found in that account's login `PATH` when activating,
+and saves the resolved path for its runner and eventual purge. In a nix-darwin
+configuration:
 
 ```nix
 {
-  inputs = {
-    virby.url = "github:quinneden/virby-nix-darwin";
-    # It is important that you dont add the line:
-    # 
-    #   inputs.nixpkgs.follows = "nixpkgs";
-    #
-    # until after you've activated with `darwin-rebuild`. This way, the cached
-    # image can be used and you won't have to build from source (which requires
-    # an existing aarch64-linux builder).
-  };
-
-  outputs = { virby, ... }: {
-    darwinConfigurations."myHost" = {
-      # Import the module
-      modules = [ virby.darwinModules.default ];
+  inputs.darwin.url = "github:nix-darwin/nix-darwin";
+  inputs.orby.url = "github:YOUR-ACCOUNT/orby";
+  outputs = { darwin, orby, ... }: {
+    darwinConfigurations.myMac = darwin.lib.darwinSystem {
+      system = "aarch64-darwin";
+      modules = [ orby.darwinModules.default ./configuration.nix ];
     };
   };
 }
 ```
 
-> [!Important]
-> When enabling Virby for the first time, you must add the binary cache to your Nix configuration. This ensures that the prebuilt VM image is available for download, rather than having to be built locally, which requires an existing linux builder. You can do this in one of two ways:
-
-Add the binary cache to your configuration **before** enabling Virby:
-
 ```nix
 {
-  nix.settings.extra-substituters = [ "https://virby-nix-darwin.cachix.org" ];
-  nix.settings.extra-trusted-public-keys = [
-    "virby-nix-darwin.cachix.org-1:z9GiEZeBU5bEeoDQjyfHPMGPBaIQJOOvYOOjGMKIlLo="
-  ];
-  
-  services.virby.enable = false;
-}
-```
-
-Run `darwin-rebuild`, then enable Virby:
-
-```nix
-{
-  nix.settings.extra-substituters = [ "https://virby-nix-darwin.cachix.org" ];
-  nix.settings.extra-trusted-public-keys = [
-    "virby-nix-darwin.cachix.org-1:z9GiEZeBU5bEeoDQjyfHPMGPBaIQJOOvYOOjGMKIlLo="
-  ];
-  
-  # Don't configure any other Virby options until after you've switched to the new
-  # configuration. If the hash for the disk image derivation doesn't match the one
-  # in the binary cache, then nix will try to build the image locally.
-  services.virby.enable = true;
-}
-```
-
-Finally, rebuild again.
-
-**OR**
-
-Run the `darwin-rebuild` command with the following options:
-
-```bash
-sudo darwin-rebuild switch --flake .#myHost \
-  --option "extra-substituters" "https://virby-nix-darwin.cachix.org" \
-  --option "extra-trusted-public-keys" "virby-nix-darwin.cachix.org-1:z9GiEZeBU5bEeoDQjyfHPMGPBaIQJOOvYOOjGMKIlLo="
-```
-
-If you prefer building the image locally, you can enable the `nix.linux-builder` option before enabling Virby:
-
-```nix
-{
-  nix.linux-builder.enable = true;
-
-  services.virby.enable = false;
-}
-```
-
-## Key Features
-
-- **On-demand activation** (optional) - VM is started when needed, then shuts down after a period of inactivity
-- **Rosetta support** (optional) - Build `x86_64-linux` packages on Apple Silicon using Rosetta translation
-- **Secure by default** - Host-only access via loopback (i.e. `127.0.0.1`), with automatic ED25519 key generation
-- **Fully configurable** - Adjust VM resources and add custom NixOS modules
-
-## Configuration
-
-### Available Options
-
-|Option|Type|Default|Description|
-|-|-|-|-|
-|`enable`|_bool_|`false`| Enable the service|
-|`allowUserSsh`|_bool_|`false`|Allow non-root users to SSH into the VM|
-|`cores`|_int_|`8`| CPU cores allocated to VM|
-|`debug`|_bool_|`false`|Enable debug logging for the VM|
-|`driver`|_string ("vfkit" or "krunkit")_|`"vfkit"`|The virtualization driver used to run the VM|
-|`diskSize`|_string_|`"100GiB"`| VM disk size|
-|`extraConfig`|_module_|`{}`|Additional NixOS modules to include in the VM's system configuration|
-|`memory`|_int_ or _string_|`6144`| Memory in MiB or string format (e.g. "6GiB")|
-|`onDemand.enable`|_bool_|`false`|Enable on-demand activation of the VM|
-|`onDemand.ttl`|_int_|`180`|The number of minutes of inactivity which must pass before the VM shuts down|
-|`port`|_int_|`31222`| SSH port for VM access|
-|`rosetta`|_bool_|`true`|Enable Rosetta support for the VM|
-|`sharedDirectories`|_attrs of string_|`{}`|An attribute set of directories that will be shared with the VM as virtio-fs devices|
-|`speedFactor`|_int_|`1`| Speed factor for Nix build machine|
-|`supportDeterminateNix`|_bool_|`false`|Enable support for using Virby with Determinate Nix|
-
-**Use krunkit instead of vfkit**
-
-By default, `vfkit` is used to run the VM. Optionally, you can configure Virby to use `krunkit` instead:
-
-```nix
-{
-  services.virby.driver = "krunkit";
-}
-```
-
-Unlike `vfkit`, `krunkit` does not support NAT networking, so the network is proxied via `vmnet-helper`.
-
-**On-demand Activation**
-
-```nix
-{
-  services.virby.onDemand.enable = true;
-  services.virby.onDemand.ttl = 180;  # Idle timeout in minutes
-}
-```
-
-**Rosetta Support**
-
-```nix
-{
-  services.virby.rosetta = true;
-}
-```
-
-**Custom NixOS Configuration**
-
-> [!Warning]
-> This option allows you to arbitrarily change the NixOS configuration, which could expose the VM to security risks.
-
-```nix
-{
-  services.virby.extraConfig = {
-    inherit (config.nix) settings;
-    # Some NixOS options which are defined in the default VM configuration cannot
-    # be overridden, such as `networking.hostName`. Others may be overridden with
-    # `lib.mkForce`. Also note that anything changed here will cause a rebuild of
-    # the VM image, and SSH keys will be regenerated.
+  services.orby = {
+    enable = true;
+    user = "my-macos-username";
+    # Optional: override PATH discovery with an absolute executable path.
+    # orbctl = "/opt/homebrew/bin/orbctl";
+    cores = 8;
+    memoryMiB = 6144;
+    diskSize = "100G";
   };
 }
 ```
 
-**Debug Options** (insecure, for troubleshooting only)
+The first activation downloads OrbStack's NixOS distribution and runs
+`nixos-rebuild` inside it. It may take time and requires network access from
+the guest; unlike Virby, it needs no prebuilt disk-image cache or existing
+Linux builder. Orby generates its own SSH key for Nix under `/var/lib/orby`,
+uses a loopback-only SSH proxy, and registers a Nix `ssh-ng` build machine.
+Try an `aarch64-linux` build to verify that the guest is available.
+
+## Lifecycle
+
+By default, Orby keeps its machine running. For on-demand use:
 
 ```nix
-{
-  services.virby.debug = true;         # Enable verbose logging
-  services.virby.allowUserSsh = true;  # Allow non-root SSH access with a separate shared key copy
-}
+services.orby.onDemand = {
+  enable = true;
+  ttl = 180; # minutes since the last SSH connection closes
+};
 ```
 
-## Architecture
+Orby starts the named machine when an SSH build connection arrives and stops
+it when idle; it never stops OrbStack itself or any other machine. On service
+disable, Orby deletes the machine and its host state. If deletion fails, it
+reports an activation error instead of silently dropping the ownership record.
+Orby refuses to take over a pre-existing machine named `orby-builder`.
+It also checks a machine identity stored on both the host and the guest before
+reconfiguring or deleting an existing machine. If first-time provisioning was
+interrupted before that identity was installed, Orby reports a failure rather
+than deleting an unverified machine. If you have confirmed that Orby created
+`orby-builder`, restore the interrupted identity before retrying:
 
-Virby integrates three components:
+```sh
+orbctl run -m orby-builder -u root mkdir -p /etc/nixos/orby
+orbctl run -m orby-builder -u root sh -c \
+  'printf "%s\n" "$1" > /etc/nixos/orby/identity' sh \
+  "$(sudo cat /var/lib/orby/identity)"
+```
 
-- **nix-darwin Module** - Configures VM as a Nix build machine for host
-- **VM Image** - Minimal NixOS disk image configured for secure ssh access and build isolation
-- **VM Runner** - Go package managing VM lifecycle and SSH proxying
+Do not run these commands on a machine that Orby did not create.
 
-**Security model:**
-- VM doesn't accept remote connections as it binds to the loopback interface
-- SSH keys are generated and copied to the VM on first run.
-- `builder` user has minimal permissions, root access is restricted by default
+Additional NixOS module declarations can be supplied as trusted Nix source:
 
-## Troubleshooting
-
-**Debug logging**
 ```nix
-{
-  # Enable debug logging to `/tmp/virbyd.log`
-  services.virby.debug = true;
-}
+services.orby.guestConfig = ''
+  environment.systemPackages = with pkgs; [ git ];
+'';
 ```
 
-```bash
-# View daemon logs
-tail -f /tmp/virbyd.log
-```
+These declarations run in the guest and are applied by `nixos-rebuild switch`
+at activation. The guest includes its original OrbStack NixOS configuration.
 
-**SSH into VM**
+To deliberately expose a host directory to the builder, use
+`services.orby.sharedDirectories.project = "/Users/me/project";`. It will be
+available in the guest at `/mnt/virtiofs/project`. This opts that directory
+out of OrbStack's default host-file isolation.
 
-```bash
-# Requires `allowUserSsh = true`
-ssh virby-vm
-# or use sudo
-```
+## Limitations and security
 
-## Acknowledgments
+Orby currently exposes only `aarch64-linux` builds. Rosetta and nested
+virtualization are not enabled; do not advertise
+`x86_64-linux` or `kvm` until verified on the target machine. OrbStack
+machines share one Linux kernel: even isolated machines are not equivalent to
+Virby's dedicated-kernel VMs as a security boundary. The Orby machine is
+created with OrbStack's `--isolated` mode, without host filesystem mounts
+unless `sharedDirectories` is configured, and without SSH agent forwarding.
 
-- Inspired by [nix-rosetta-builder](https://github.com/cpick/nix-rosetta-builder)
-- Incorporates [vfkit](https://github.com/crc-org/vfkit), [krunkit](https://github.com/libkrun/krunkit), and [vmnet-helper](https://github.com/nirs/vmnet-helper)
+The OrbStack owner can control the machine and its Nix builder; choose a
+trusted local user. `services.orby.orbctl` optionally overrides CLI discovery
+without requiring the unfree OrbStack package in your Nix store. This fork does
+not automatically migrate or delete a Virby installation. To purge Orby,
+first switch with `services.orby.enable = false` while keeping the Orby module
+imported; remove the import only after that switch succeeds.
 
----
+## Credits
 
-**License**: MIT - see [LICENSE](LICENSE) file for details.
+- [Virby](https://github.com/quinneden/virby-nix-darwin) by Quinn Edenfield is
+  the original project. Its MIT copyright notice is preserved in [LICENSE](LICENSE).
+- Virby was modeled after [nix-rosetta-builder](https://github.com/cpick/nix-rosetta-builder)
+  by cpick, from which it borrowed and adapted parts of its implementation.
+- [OrbStack](https://orbstack.dev/) by Orbital Labs provides the machine runtime
+  used by Orby.

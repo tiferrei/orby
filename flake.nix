@@ -1,77 +1,36 @@
 {
-  description = "A {krun|vf}kit-based linux builder for Nix-darwin";
+  description = "Orby: an OrbStack-backed NixOS remote builder for nix-darwin";
 
-  inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs?ref=nixpkgs-unstable";
-  };
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
   outputs =
-    { self, nixpkgs }@inputs:
-
+    { self, nixpkgs }:
     let
-      inherit (nixpkgs) lib;
-      _lib = import ./lib { inherit lib; };
-
-      darwinSystem = "aarch64-darwin";
-      linuxSystem = "aarch64-linux";
-      systems = [
-        darwinSystem
-        linuxSystem
-      ];
-
-      forSystem = lib.genAttrs systems (
-        system:
-        (f: {
-          ${system} = f (
-            import nixpkgs {
-              inherit system;
-              overlays = [ self.overlays.default ];
-            }
-          );
-        })
-      );
+      system = "aarch64-darwin";
+      pkgs = nixpkgs.legacyPackages.${system};
     in
-
     {
-      darwinModules = {
-        default = self.darwinModules.virby;
-        virby = import ./module { inherit _lib self; };
+      darwinModules.default = import ./module { inherit self; };
+      darwinModules.orby = self.darwinModules.default;
+
+      packages.${system} = {
+        default = self.packages.${system}.orby-runner;
+        orby-runner = pkgs.callPackage ./pkgs/orby-runner { };
       };
 
-      devShells = forSystem.aarch64-darwin (pkgs: {
-        default = pkgs.mkShellNoCC {
-          name = "virby-dev";
-          packages = with pkgs; [
-            krunkit
-            vfkit
-          ];
-        };
-      });
+      checks.${system}.module-eval =
+        assert import ./tests/module-eval.nix { inherit self nixpkgs; };
+        pkgs.runCommand "orby-module-eval" { } "touch $out";
 
-      formatter = forSystem.aarch64-darwin (
-        pkgs: pkgs.nixfmt-tree.override { settings.formatter.nixfmt.options = [ "--strict" ]; }
-      );
-
-      overlays.default = final: prev: {
-        # FIXME: remove when https://github.com/NixOS/nixpkgs/pull/525378 is merged
-        krunkit = prev.krunkit.overrideAttrs (old: {
-          postInstall = (prev.postInstall or "") + ''
-            install -Dm444 edk2/KRUN_EFI.silent.fd $out/share/krunkit/KRUN_EFI.silent.fd
-          '';
-        });
-
-        # FIXME: remove when https://github.com/NixOS/nixpkgs/pull/495633 is merged
-        vmnet-helper = final.callPackage ./pkgs/vmnet-helper { };
+      devShells.${system}.default = pkgs.mkShellNoCC {
+        packages = with pkgs; [
+          go
+          gopls
+          nixfmt
+        ];
       };
-
-      packages =
-        forSystem.aarch64-darwin (pkgs: {
-          default = self.packages.${darwinSystem}.vm-runner;
-          vm-runner = pkgs.callPackage ./pkgs/vm-runner { };
-        })
-        // forSystem.aarch64-linux (pkgs: {
-          default = self.packages.${linuxSystem}.vm-image;
-          vm-image = pkgs.callPackage ./pkgs/vm-image { inherit _lib inputs lib; };
-        });
+      formatter.${system} = pkgs.nixfmt-tree.override {
+        settings.formatter.nixfmt.options = [ "--strict" ];
+      };
     };
 }

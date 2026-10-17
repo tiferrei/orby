@@ -1,4 +1,4 @@
-{ _lib, self }:
+{ self }:
 {
   config,
   lib,
@@ -6,405 +6,395 @@
   pkgs,
   ...
 }:
-
 let
-  inherit (_lib.constants)
-    baseDiskFileName
-    diffDiskFileName
-    sshdKeysSharedDirName
-    sshHostPrivateKeyFileName
-    sshHostPublicKeyFileName
-    sshKnownHostsFileName
-    sshUserPrivateKeyFileName
-    sshUserPrivateKeySharedFileName
-    sshUserPublicKeyFileName
-    vmHostName
-    vmUser
-    workingDirectory
-    ;
-
-  inherit (_lib.helpers)
-    logError
-    logInfo
-    parseMemoryMiB
-    setupLogFunctions
-    ;
-
-  cfg = config.services.virby;
-
-  binPath = lib.makeBinPath (
-    with pkgs;
-    [
-      coreutils
-      findutils
-      gnugrep
-      nix
-      openssh
-      self.packages.${stdenv.hostPlatform.system}.vm-runner
-    ]
-  );
-
-  linuxSystem = builtins.replaceStrings [ "darwin" ] [ "linux" ] pkgs.stdenv.hostPlatform.system;
-
-  imageWithFinalConfig = self.packages.${linuxSystem}.vm-image.override {
-    inherit (cfg)
-      debug
-      extraConfig
-      onDemand
-      rosetta
-      sharedDirectories
-      ;
-  };
-
-  baseDiskPath = "${workingDirectory}/${baseDiskFileName}";
-  diffDiskPath = "${workingDirectory}/${diffDiskFileName}";
-  sourceImagePath = "${imageWithFinalConfig}/${imageWithFinalConfig.passthru.filePath}";
-
-  sshHostKeyAlias = "${vmHostName}-key";
-
-  daemonName = "virbyd";
-
-  darwinGid = 348;
-  darwinGroup = "virby";
-  darwinUid = darwinGid;
-  darwinUser = "_${darwinGroup}";
-  groupPath = "/Groups/${darwinGroup}";
-  userPath = "/Users/${darwinUser}";
-
-  vmConfigJson = pkgs.writeText "virby-vm-config.json" (
-    builtins.toJSON {
-      cores = cfg.cores;
-      debug = cfg.debug;
-      driver = cfg.driver;
-      driver-bin = lib.getExe cfg.driverPackage;
-      memory = parseMemoryMiB cfg.memory;
-      nested-virtualization = cfg.nestedVirtualization;
-      on-demand = cfg.onDemand.enable;
-      port = cfg.port;
-      rosetta = cfg.rosetta;
-      shared-dirs = cfg.sharedDirectories;
-      ttl = cfg.onDemand.ttl * 60;
-      vmnet-helper-bin = lib.optionalString (cfg.driver == "krunkit") (lib.getExe pkgs.vmnet-helper);
-    }
-  );
-
-  prepareVmScript = pkgs.writeShellScript "${daemonName}-prepare-vm" ''
-    PATH=${binPath}:$PATH
-
-    set -euo pipefail
-    cd ${workingDirectory}
-
-    NEEDS_GENERATE_SSH_KEYS=0
-
-    should_generate_ssh_keys() {
-      local key_files=(
-        ${sshdKeysSharedDirName}/${sshHostPrivateKeyFileName}
-        ${sshdKeysSharedDirName}/${sshUserPublicKeyFileName}
-        ${sshHostPublicKeyFileName}
-        ${sshUserPrivateKeyFileName}
-      )
-
-      [[ $NEEDS_GENERATE_SSH_KEYS == 1 ]] && return 0
-
-      for file in "''${key_files[@]}"; do
-        [[ ! -f $file ]] && return 0
-      done
-    }
-
-    generate_ssh_keys() {
-      local temp_dir=$(mktemp -d)
-      local temp_host_key="$temp_dir/host_key"
-      local temp_user_key="$temp_dir/user_key"
-
-      trap "rm -rf $temp_dir" RETURN
-
-      ssh-keygen -C ${darwinUser}@darwin -f "$temp_user_key" -N "" -t ed25519 || return 1
-      ssh-keygen -C root@${vmHostName} -f "$temp_host_key" -N "" -t ed25519 || return 1
-
-      chmod 640 "$temp_host_key.pub" "$temp_user_key.pub"
-      chmod 600 "$temp_host_key"
-      chmod 600 "$temp_user_key"
-
-      # Remove old keys if they exist
-      rm -f ${sshUserPrivateKeyFileName} ${sshUserPrivateKeySharedFileName} ${sshHostPublicKeyFileName}
-      rm -rf ${sshdKeysSharedDirName}
-
-      echo "${sshHostKeyAlias} $(cat $temp_host_key.pub)" > ${sshKnownHostsFileName}
-
-      mkdir -p ${sshdKeysSharedDirName}
-
-      mv "$temp_user_key" ${sshUserPrivateKeyFileName}
-      mv "$temp_host_key.pub" ${sshHostPublicKeyFileName}
-      mv "$temp_host_key" ${sshdKeysSharedDirName}/${sshHostPrivateKeyFileName}
-      mv "$temp_user_key.pub" ${sshdKeysSharedDirName}/${sshUserPublicKeyFileName}
-    }
-
-    umask 'g-w,o='
-    chmod 'g-w,o=x' .
-
-    source_image_path_marker="${workingDirectory}/.disk-image-store-path"
-    current_source_image_path=$(cat $source_image_path_marker 2>/dev/null) || true
-
-    if [[ ! -f ${diffDiskPath} ]] || [[ $current_source_image_path != ${imageWithFinalConfig} ]]; then
-      ${logInfo} "Creating VM disk images..."
-
-      rm -f ${baseDiskPath} ${diffDiskPath}
-
-      if ! cp ${sourceImagePath} ${baseDiskPath}; then
-        ${logError} "Failed to copy source image to ${baseDiskPath}"
-        exit 1
-      fi
-      ${logInfo} "Copied base disk image to ${baseDiskPath}"
-
-      if ! (cp --reflink=always ${baseDiskPath} ${diffDiskPath} && chmod 'u+w' ${diffDiskPath}); then
-        ${logError} "Failed to create diff disk image"
-        exit 1
-      fi
-      ${logInfo} "Created diff disk image: ${diffDiskPath}"
-
-      if ! truncate -s ${cfg.diskSize} ${diffDiskPath}; then
-        ${logError} "Failed to resize diff disk image to ${cfg.diskSize}"
-        exit 1
-      fi
-      ${logInfo} "Resized diff disk image to ${cfg.diskSize}"
-
-      echo ${imageWithFinalConfig} > "$source_image_path_marker"
-
-      NEEDS_GENERATE_SSH_KEYS=1
-    fi
-
-    if should_generate_ssh_keys; then
-      ${logInfo} "Generating SSH keys..."
-      if ! generate_ssh_keys; then
-        ${logError} "Failed to generate SSH keys"
-        exit 1
-      fi
-    fi
-
-    # The runner always uses the private key directly, so it must stay owner-only.
-    user_key_required_mode=600
-    user_key_actual_mode=$(stat -c "%a" ${sshUserPrivateKeyFileName} 2>/dev/null)
-
-    if [[ $user_key_required_mode -ne $user_key_actual_mode ]]; then
-      if ! chmod "$user_key_required_mode" ${sshUserPrivateKeyFileName}; then
-        ${logError} "Failed to set permissions on ${sshUserPrivateKeyFileName}"
-        exit 1
-      fi
-    fi
-
-    if [[ ${if cfg.allowUserSsh then "1" else "0"} -eq 1 ]]; then
-      if ! cp -f ${sshUserPrivateKeyFileName} ${sshUserPrivateKeySharedFileName}; then
-        ${logError} "Failed to create shared SSH key copy"
-        exit 1
-      fi
-
-      if ! chmod 644 ${sshUserPrivateKeySharedFileName}; then
-        ${logError} "Failed to set permissions on ${sshUserPrivateKeySharedFileName}"
-        exit 1
-      fi
-    else
-      rm -f ${sshUserPrivateKeySharedFileName}
-    fi
-
-    if ! [[ -f ${sshHostPublicKeyFileName} ]]; then
-      ${logError} "Missing host public key: ${sshHostPublicKeyFileName}"
+  cfg = config.services.orby;
+  name = "orby-builder";
+  state = "/var/lib/orby";
+  key = "${state}/builder_ed25519";
+  port = toString cfg.port;
+  diskMatch = builtins.match "([1-9][0-9]*)G" cfg.diskSize;
+  diskGiB = if diskMatch == null then 0 else lib.toInt (builtins.head diskMatch);
+  mounts = lib.mapAttrsToList (tag: path: "${path}:/mnt/virtiofs/${tag}") cfg.sharedDirectories;
+  mountFlags = lib.concatMapStringsSep " " (mount: "--mount ${lib.escapeShellArg mount}") mounts;
+  mountSetting = lib.concatStringsSep "," mounts;
+  runner = self.packages.${pkgs.stdenv.hostPlatform.system}.orby-runner;
+  runDaemon = pkgs.writeShellScript "orbyd-start" ''
+    export HOME=$(/usr/bin/dscl . -read /Users/${cfg.user} NFSHomeDirectory | /usr/bin/awk '{print $2}')
+    if [[ -z "$HOME" ]]; then
+      echo "Orby: machine owner's home directory is missing" >&2
       exit 1
     fi
-
-    echo "${sshHostKeyAlias} $(cat ${sshHostPublicKeyFileName})" > ${sshKnownHostsFileName}
-
-    if ! chmod 'go+r' ${sshKnownHostsFileName}; then
-      ${logError} "Failed to set permissions on ${sshKnownHostsFileName}"
+    export ORBY_ORBCTL=$(/bin/cat ${state}/orbctl-bin)
+    if [[ ! -x "$ORBY_ORBCTL" ]]; then
+      echo "Orby: resolved orbctl is missing: $ORBY_ORBCTL" >&2
       exit 1
     fi
+    exec ${lib.getExe runner}
   '';
-
+  guestModule = pkgs.writeText "orby-guest-module.nix" ''
+    { lib, pkgs, ... }: {
+      services.openssh = {
+        # OrbStack's stock NixOS module disables guest sshd in favor of its
+        # built-in SSH proxy. Orby needs a separate sshd for Nix's ssh-ng
+        # builder connection to the guest's own IP address.
+        enable = lib.mkForce true;
+        # NixOS 25.11 generates keys when sshd starts. OrbStack uses socket
+        # activation, so activation must start sshd-keygen before reading one.
+        hostKeys = lib.mkForce [ { type = "ed25519"; path = "/etc/ssh/ssh_host_ed25519_key"; } ];
+        settings = {
+          PasswordAuthentication = false;
+          KbdInteractiveAuthentication = false;
+          PermitRootLogin = "no";
+        };
+      };
+      users.users.builder = {
+        isNormalUser = true;
+        openssh.authorizedKeys.keyFiles = [ /etc/nixos/orby/builder.pub ];
+      };
+      nix.settings.trusted-users = [ "builder" ];
+      nix.settings.experimental-features = [ "nix-command" "flakes" ];
+      nix.settings.auto-optimise-store = true;
+      # OrbStack runs its NixOS distribution as an LXC machine. Mounting
+      # debugfs there requires privileges the machine does not have and makes
+      # nixos-rebuild switch fail even though the builder itself is healthy.
+      systemd.mounts = [ { where = "/sys/kernel/debug"; enable = false; } ];
+      ${cfg.guestConfig}
+    }
+  '';
+  guestWrapper = pkgs.writeText "orby-guest-configuration.nix" ''
+    { ... }: {
+      imports = [ /etc/nixos/configuration.nix /etc/nixos/orby/module.nix ];
+    }
+  '';
+  runnerConfig = pkgs.writeText "orby-runner.json" (
+    builtins.toJSON {
+      orbctl = "";
+      machine = name;
+      port = cfg.port;
+      on-demand = cfg.onDemand.enable;
+      ttl = cfg.onDemand.ttl * 60;
+    }
+  );
+  # Activation scripts run as root; OrbStack's state belongs to the real macOS
+  # user. Always run orbctl with that user's identity and home directory.
+  orb = ''
+    orb() {
+      /usr/bin/sudo -H -u "$owner" /usr/bin/env HOME="$home" "$orbctl_bin" "$@"
+    }
+    get_home() {
+      /usr/bin/dscl . -read "/Users/$1" NFSHomeDirectory | /usr/bin/awk '{print $2}'
+    }
+    # OrbStack's push command can succeed without placing files in isolated
+    # machines. Transfer bounded base64 chunks via orbctl run instead. Chunks
+    # are multiples of four so each can be decoded independently.
+    install_guest_file() {
+      local source="$1" destination="$2" encoded chunk temporary
+      encoded=$(${pkgs.coreutils}/bin/base64 --wrap=0 "$source")
+      temporary="$destination.tmp.$(/usr/bin/uuidgen)"
+      # $1 and $2 are expanded by the shell inside the guest.
+      # shellcheck disable=SC2016
+      orb run -m ${name} -u root sh -c 'umask 077; : > "$1"' sh "$temporary"
+      while [[ -n "$encoded" ]]; do
+        chunk="''${encoded:0:4096}"
+        encoded="''${encoded:4096}"
+        # shellcheck disable=SC2016
+        orb run -m ${name} -u root sh -c 'printf "%s" "$1" | base64 -d >> "$2"' sh "$chunk" "$temporary"
+      done
+      orb run -m ${name} -u root mv "$temporary" "$destination"
+      orb run -m ${name} -u root chmod 644 "$destination"
+    }
+  '';
+  resolveOrbctl =
+    if cfg.orbctl == null then
+      ''
+        if ! orbctl_bin=$(/usr/bin/sudo -i -u "$owner" /bin/sh -c 'command -v orbctl'); then
+          echo "Orby: orbctl not found in $owner's login PATH" >&2
+          exit 1
+        fi
+      ''
+    else
+      "orbctl_bin=${lib.escapeShellArg cfg.orbctl}";
   buildMachines = [
     {
-      hostName = vmHostName;
+      hostName = "orby-vm";
       maxJobs = cfg.cores;
       protocol = "ssh-ng";
+      systems = [ "aarch64-linux" ];
       supportedFeatures = [
         "benchmark"
         "big-parallel"
-        "kvm"
-        "nixos-test"
       ];
       speedFactor = cfg.speedFactor;
-      systems = [ linuxSystem ] ++ lib.optional cfg.rosetta "x86_64-linux";
     }
   ];
-
-  distributedBuilds = lib.mkForce true;
 in
-
 {
   imports = [ ./options.nix ];
 
   config = lib.mkMerge [
-    # FIXME: remove when https://github.com/NixOS/nixpkgs/pull/525378 is merged
-    (lib.mkIf (cfg.driver == "krunkit") { nixpkgs.overlays = [ self.overlays.default ]; })
-
-    (lib.mkIf (!cfg.enable) {
-      system.activationScripts.postActivation.text = lib.mkBefore ''
-        ${setupLogFunctions}
-
-        if [[ -d ${workingDirectory} ]]; then
-          logInfo "Removing working directory..."
-          rm -rf ${workingDirectory}
-        fi
-
-        if uid=$(id -u ${darwinUser} 2>/dev/null); then
-          if [[ $uid -ne ${toString darwinUid} ]]; then
-            logError "Existing user: ${darwinUser} has unexpected UID: $uid"
-            exit 1
-          fi
-
-          logInfo "Deleting user ${darwinUser}..."
-          dscl . -delete ${userPath}
-        fi
-
-        unset 'uid'
-
-        if primaryGroupId=$(dscl . -read ${groupPath} 'PrimaryGroupID' 2>/dev/null | cut -d' ' -f2); then
-          if [[ $primaryGroupId -ne ${toString darwinGid} ]]; then
-            logError "Existing group: ${darwinGroup} has unexpected GID: $primaryGroupId"
-            exit 1
-          fi
-
-          logInfo "Deleting group ${darwinGroup}..."
-          dscl . -delete ${groupPath}
-        fi
-
-        unset 'primaryGroupId'
-      '';
-    })
-
     (lib.mkIf cfg.enable {
       assertions = [
         {
-          assertion = !(pkgs.stdenv.hostPlatform.system != "aarch64-darwin" && cfg.rosetta);
-          message = "Rosetta is only supported on aarch64-darwin systems.";
+          assertion = pkgs.stdenv.hostPlatform.system == "aarch64-darwin";
+          message = "Orby requires Apple Silicon macOS.";
+        }
+        {
+          assertion = builtins.match "[a-z_][a-z0-9_-]*" cfg.user != null;
+          message = "services.orby.user must name the macOS user who owns OrbStack.";
+        }
+        {
+          assertion = diskMatch != null;
+          message = "services.orby.diskSize must be a positive number of GiB, e.g. 100G.";
+        }
+        {
+          assertion = cfg.memoryMiB >= 1024;
+          message = "services.orby.memoryMiB must be at least 1024.";
+        }
+        {
+          assertion = cfg.orbctl == null || builtins.match "/.+" cfg.orbctl != null;
+          message = "services.orby.orbctl must be an absolute path when overridden.";
+        }
+        {
+          assertion =
+            lib.all (tag: builtins.match "[a-zA-Z0-9_-]+" tag != null) (
+              builtins.attrNames cfg.sharedDirectories
+            )
+            && lib.all (path: builtins.match "/[^,:]*" path != null) (
+              builtins.attrValues cfg.sharedDirectories
+            );
+          message = "Orby shared directory tags must be simple names and host paths must be absolute without commas or colons.";
         }
       ];
 
       system.activationScripts.extraActivation.text = lib.mkAfter ''
-        ${setupLogFunctions}
-
-        # Create group
-        if ! primaryGroupId=$(dscl . -read ${groupPath} 'PrimaryGroupID' 2>/dev/null | cut -d' ' -f2); then
-          logInfo "Creating group ${darwinGroup}..."
-          dscl . -create ${groupPath} 'PrimaryGroupID' ${toString darwinGid}
-        elif [[ $primaryGroupId -ne ${toString darwinGid} ]]; then
-          logError "Existing group: ${darwinGroup} has unexpected GID: $primaryGroupId, expected: ${toString darwinGid}"
+        set -euo pipefail
+        owner=${lib.escapeShellArg cfg.user}
+        ${orb}
+        home=$(get_home "$owner")
+        if [[ -z "$home" ]]; then
+          echo "Orby: no home directory for $owner" >&2
           exit 1
         fi
-
-        unset 'primaryGroupId'
-
-        # Create user
-        if ! uid=$(id -u ${darwinUser} 2>/dev/null); then
-          logInfo "Setting up user ${darwinUser}..."
-          dscl . -create ${userPath}
-          dscl . -create ${userPath} 'PrimaryGroupID' ${toString darwinGid}
-          dscl . -create ${userPath} 'NFSHomeDirectory' ${workingDirectory}
-          dscl . -create ${userPath} 'UserShell' /usr/bin/false
-          dscl . -create ${userPath} 'IsHidden' 1
-          dscl . -create ${userPath} 'UniqueID' ${toString darwinUid}
-        elif [[ $uid -ne ${toString darwinUid} ]]; then
-          logError "Existing user: ${darwinUser} has unexpected UID: $uid, expected: ${toString darwinUid}"
+        ${resolveOrbctl}
+        if [[ "$orbctl_bin" != /* ]] || ! /usr/bin/sudo -H -u "$owner" /bin/sh -c 'test -x "$1"' sh "$orbctl_bin"; then
+          echo "Orby: orbctl must resolve to an executable absolute path: $orbctl_bin" >&2
           exit 1
         fi
+        /bin/mkdir -p ${state}
+        # The unprivileged runner reads the saved orbctl path in this directory.
+        # Private keys and the ownership marker themselves stay root-only.
+        /bin/chmod 755 ${state}
+        if [[ -f ${state}/owner ]]; then
+          saved_owner=$(/bin/cat ${state}/owner)
+          if [[ "$saved_owner" != "$owner" ]]; then
+            echo "Orby: machine belongs to $saved_owner, not $owner" >&2
+            exit 1
+          fi
+          if ! orb info ${name} >/dev/null; then
+            echo "Orby: owned machine is missing; refusing automatic replacement" >&2
+            exit 1
+          fi
+          orb start ${name}
+          guest_identity=$(orb run -m ${name} -u root cat /etc/nixos/orby/identity 2>/dev/null || true)
+          if [[ -z "$guest_identity" || "$guest_identity" != "$(/bin/cat ${state}/identity)" ]]; then
+            echo "Orby: machine identity mismatch; refusing to manage ${name}" >&2
+            exit 1
+          fi
+        else
+          # Refuse to adopt a machine based on its name alone.
+          if orb info ${name} >/dev/null 2>&1; then
+            echo "Orby: ${name} already exists but is not owned by Orby" >&2
+            exit 1
+          fi
+          /bin/echo "$owner" > ${state}/owner
+          /bin/chmod 600 ${state}/owner
+          /bin/echo "$orbctl_bin" > ${state}/orbctl-bin
+          /bin/chmod 644 ${state}/orbctl-bin
+          orb create --isolated ${mountFlags} --cpus ${toString cfg.cores} \
+            --memory ${toString (builtins.ceil (cfg.memoryMiB / 1024))}G \
+            --disk ${lib.escapeShellArg cfg.diskSize} nixos ${name}
+          /usr/bin/uuidgen > ${state}/identity
+          /bin/chmod 600 ${state}/identity
+          orb start ${name}
+          orb run -m ${name} -u root mkdir -p /etc/nixos/orby
+          # $1 expands in the guest shell, not in this activation script.
+          # shellcheck disable=SC2016
+          orb run -m ${name} -u root sh -c \
+            'printf "%s\n" "$1" > /etc/nixos/orby/identity' sh "$(/bin/cat ${state}/identity)"
+        fi
+        /bin/echo "$orbctl_bin" > ${state}/orbctl-bin
+        /bin/chmod 644 ${state}/orbctl-bin
 
-        unset 'uid'
-
-        # Setup working directory
-        if [[ ! -d ${workingDirectory} ]]; then
-          logInfo "Setting up working directory..."
-          mkdir -p ${workingDirectory}
+        desired_resources="${toString cfg.cores}:${toString cfg.memoryMiB}:${toString diskGiB}"
+        previous_resources=$(/bin/cat ${state}/resources 2>/dev/null || true)
+        restart_needed=0
+        if [[ "$previous_resources" != "$desired_resources" ]]; then
+          if [[ -n "$previous_resources" ]]; then
+            previous_disk=''${previous_resources##*:}
+            if (( ${toString diskGiB} < previous_disk )); then
+              echo "Orby: shrinking the managed disk is not supported" >&2
+              exit 1
+            fi
+          fi
+          orb config set machine.${name}.cpu ${toString cfg.cores}
+          orb config set machine.${name}.memory_mib ${toString cfg.memoryMiB}
+          orb config set machine.${name}.disk_bytes ${toString (diskGiB * 1024 * 1024 * 1024)}
+          if [[ -n "$previous_resources" ]]; then
+            restart_needed=1
+          fi
         fi
 
-        chown ${darwinUser}:${darwinGroup} ${workingDirectory}
+        desired_mounts=${lib.escapeShellArg mountSetting}
+        previous_mounts=$(/bin/cat ${state}/mounts 2>/dev/null || true)
+        if [[ "$previous_mounts" != "$desired_mounts" ]]; then
+          orb config set machine.${name}.mounts "$desired_mounts"
+          if [[ -f ${state}/mounts ]]; then
+            restart_needed=1
+          fi
+        fi
+        if [[ "$restart_needed" == 1 ]]; then
+          orb restart ${name}
+        fi
+        /bin/echo "$desired_resources" > ${state}/resources
+        /bin/chmod 600 ${state}/resources
+        /bin/echo "$desired_mounts" > ${state}/mounts
+        /bin/chmod 600 ${state}/mounts
 
-        logInfo "Preparing Virby VM runtime files..."
-        if ! ${prepareVmScript}; then
-          logError "Failed to prepare Virby VM runtime files"
+        if [[ ! -f ${key} ]]; then
+          ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f ${key}
+        fi
+        /bin/chmod 600 ${key}
+
+        # The OrbStack NixOS image is the base. Apply a small NixOS module in
+        # the guest; never mutate its disk from the macOS host.
+        orb start ${name}
+        orb run -m ${name} -u root mkdir -p /etc/nixos/orby
+        install_guest_file ${guestModule} /etc/nixos/orby/module.nix
+        install_guest_file ${guestWrapper} /etc/nixos/orby/configuration.nix
+        install_guest_file ${key}.pub /etc/nixos/orby/builder.pub
+        # A previous switch may have left the unsupported debugfs mount failed.
+        orb run -m ${name} -u root systemctl reset-failed sys-kernel-debug.mount 2>/dev/null || true
+        orb run -m ${name} -u root /run/current-system/sw/bin/nixos-rebuild \
+          switch -I nixos-config=/etc/nixos/orby/configuration.nix
+
+        orb run -m ${name} -u root systemctl start sshd-keygen.service
+        host_key=$(orb run -m ${name} -u root cat /etc/ssh/ssh_host_ed25519_key.pub)
+        if [[ ! "$host_key" =~ ^ssh-ed25519[[:space:]] ]]; then
+          echo "Orby: missing guest SSH host key" >&2
           exit 1
         fi
+        /bin/echo "orby-vm-key $host_key" > ${state}/known_hosts
+        /bin/chmod 644 ${state}/known_hosts
 
-        chown -R ${darwinUser}:${darwinGroup} ${workingDirectory}
+        guest_ip=$(orb run -m ${name} -u root hostname -I)
+        for addr in $guest_ip; do
+          if [[ "$addr" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            guest_ip="$addr"
+            break
+          fi
+        done
+        if [[ ! "$guest_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "Orby: no guest IPv4 address" >&2
+          exit 1
+        fi
+        ${pkgs.openssh}/bin/ssh -i ${key} -o BatchMode=yes \
+          -o ConnectTimeout=10 -o HostKeyAlias=orby-vm-key \
+          -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=${state}/known_hosts \
+          -o StrictHostKeyChecking=yes "builder@$guest_ip" nix-store --version
+        ${lib.optionalString cfg.onDemand.enable "orb stop ${name}"}
       '';
 
-      environment.etc."ssh/ssh_config.d/100-${vmHostName}.conf".text = ''
-        Host ${vmHostName}
-          GlobalKnownHostsFile ${workingDirectory}/${sshKnownHostsFileName}
-          UserKnownHostsFile /dev/null
-          HostKeyAlias ${sshHostKeyAlias}
-          Hostname localhost
-          AddressFamily inet
+      environment.etc."ssh/ssh_config.d/100-orby-vm.conf".text = ''
+        Host orby-vm
+          HostName localhost
+          Port ${port}
+          User builder
+          IdentityFile ${key}
           IdentitiesOnly yes
-          IdentityFile ${workingDirectory}/${
-            if cfg.allowUserSsh then sshUserPrivateKeySharedFileName else sshUserPrivateKeyFileName
-          }
-          Port ${toString cfg.port}
+          HostKeyAlias orby-vm-key
+          GlobalKnownHostsFile ${state}/known_hosts
+          UserKnownHostsFile /dev/null
           StrictHostKeyChecking yes
-          User ${vmUser}
       '';
 
-      launchd.daemons = {
-        ${daemonName} = {
-          path = with pkgs; [
-            coreutils
-            findutils
-            gnugrep
-            nix
-            openssh
-            self.packages.${pkgs.stdenv.hostPlatform.system}.vm-runner
-          ];
-          command = lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.vm-runner;
-
-          serviceConfig = {
-            UserName = darwinUser;
-            WorkingDirectory = workingDirectory;
-            KeepAlive = !cfg.onDemand.enable;
-            StandardOutPath = "/tmp/${daemonName}.log";
-
-            Sockets.Listener = {
-              SockFamily = "IPv4";
-              SockNodeName = "localhost";
-              SockServiceName = toString cfg.port;
-            };
-
-            EnvironmentVariables = {
-              VIRBY_VM_CONFIG_FILE = toString vmConfigJson;
-            };
+      launchd.daemons.orbyd = {
+        command = toString runDaemon;
+        serviceConfig = {
+          UserName = cfg.user;
+          KeepAlive = !cfg.onDemand.enable;
+          StandardOutPath = "/tmp/orbyd.log";
+          StandardErrorPath = "/tmp/orbyd.log";
+          Sockets.Listener = {
+            SockFamily = "IPv4";
+            SockNodeName = "localhost";
+            SockServiceName = port;
           };
+          EnvironmentVariables.ORBY_CONFIG_FILE = toString runnerConfig;
         };
       };
-
-      system.build.virbyImage = imageWithFinalConfig;
     })
 
-    (lib.mkIf (!cfg.supportDeterminateNix) { nix = { inherit buildMachines distributedBuilds; }; })
+    (lib.mkIf (!cfg.enable) {
+      system.activationScripts.postActivation.text = lib.mkBefore ''
+        set -euo pipefail
+        if [[ -f ${state}/owner ]]; then
+          owner=$(/bin/cat ${state}/owner)
+          if [[ ! "$owner" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+            echo "Orby: invalid saved owner; refusing purge" >&2
+            exit 1
+          fi
+          ${orb}
+          if [[ ! -f ${state}/orbctl-bin ]]; then
+            echo "Orby: missing saved orbctl path; refusing purge" >&2
+            exit 1
+          fi
+          orbctl_bin=$(/bin/cat ${state}/orbctl-bin)
+          if [[ ! -x "$orbctl_bin" ]]; then
+            echo "Orby: saved orbctl binary is missing: $orbctl_bin" >&2
+            exit 1
+          fi
+          home=$(get_home "$owner")
+          if [[ -z "$home" ]]; then
+            echo "Orby: owner is missing; refusing purge" >&2
+            exit 1
+          fi
+          # A failed deletion must not erase the only record of ownership.
+          if [[ ! -f ${state}/identity ]] || ! orb info ${name} >/dev/null; then
+            echo "Orby: missing machine identity or machine; refusing unverified purge" >&2
+            exit 1
+          fi
+          orb start ${name}
+          guest_identity=$(orb run -m ${name} -u root cat /etc/nixos/orby/identity 2>/dev/null || true)
+          if [[ -z "$guest_identity" || "$guest_identity" != "$(/bin/cat ${state}/identity)" ]]; then
+            echo "Orby: machine identity mismatch; refusing to delete ${name}" >&2
+            exit 1
+          fi
+          orb delete -f ${name}
+          /bin/rm -rf ${state}
+        fi
+      '';
+    })
 
-    (lib.mkIf cfg.supportDeterminateNix (
+    (lib.mkIf (cfg.enable && !cfg.supportDeterminateNix) {
+      nix = {
+        distributedBuilds = true;
+        inherit buildMachines;
+      };
+    })
+    (lib.mkIf (cfg.enable && cfg.supportDeterminateNix) (
       {
         assertions = [
           {
             assertion = config.determinateNix.enable or false;
-            message = ''
-              `supportDeterminateNix = true` requires the Determinate module for Nix-darwin to be enabled.
-
-              To enable:
-              - Add `determinate.url = "github:determinatesystems/determinate"` to your flake inputs.
-              - Include `inputs.determinate.darwinModules.default` in your imports.
-              - Set `determinateNix.enable = true`.
-            '';
+            message = "Orby's Determinate Nix support requires determinateNix.enable.";
           }
         ];
       }
       // lib.optionalAttrs (options ? determinateNix) {
-        determinateNix = { inherit buildMachines distributedBuilds; };
+        determinateNix = {
+          distributedBuilds = true;
+          inherit buildMachines;
+        };
       }
     ))
   ];

@@ -1,221 +1,65 @@
+{ lib, ... }:
 {
-  config,
-  lib,
-  pkgs,
-  ...
-}:
-
-let
-  cfg = config.services.virby;
-in
-
-{
-  options.services.virby = {
-    enable = lib.mkEnableOption "Virby, a vfkit-based linux builder for nix-darwin";
-
-    allowUserSsh = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = ''
-        Whether to allow non-root users to SSH into the VM.
-
-        This is useful for debugging, but it means that any user on the host machine can ssh into
-        the VM without root privileges, which could pose a security risk.
-      '';
+  options.services.orby = {
+    enable = lib.mkEnableOption "Orby, an OrbStack NixOS builder (disabling purges its machine)";
+    user = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "alice";
+      description = "macOS account that owns the OrbStack machine and runs Orby's launchd service.";
     };
-
+    orbctl = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/opt/homebrew/bin/orbctl";
+      description = "Override the OrbStack CLI with an absolute path. By default Orby uses the first orbctl in the machine owner's login PATH.";
+    };
     cores = lib.mkOption {
-      type = lib.types.int;
+      type = lib.types.ints.positive;
       default = 8;
-      description = ''
-        The number of CPU cores allocated to the VM.
-
-        This also sets the `nix.buildMachines.max-jobs` setting.
-      '';
     };
-
-    debug = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = ''
-        Whether to enable debug logging for the VM.
-
-        When enabled, the launchd daemon will direct all stdout/stderr and serial output to log
-        files. This is useful for debugging issues with the VM, but it may pose a security risk and
-        should only be enabled when necessary.
-      '';
+    memoryMiB = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 6144;
     };
-
     diskSize = lib.mkOption {
       type = lib.types.str;
-      default = "100GiB";
-      description = ''
-        The size of the disk image for the VM.
-
-        The option value must be a string with a number, followed by the suffix "GiB".
-      '';
+      default = "100G";
     };
-
-    driver = lib.mkOption {
-      type = lib.types.enum [
-        "krunkit"
-        "vfkit"
-      ];
-      default = "vfkit";
-      description = ''
-        The virtualization driver used to run the VM.
-
-        Must be either "krunkit" or "vfkit".
-      '';
-    };
-
-    driverPackage = lib.mkOption {
-      type = lib.types.package;
-      readOnly = true;
-      default = pkgs.${cfg.driver};
-      description = ''
-        Read-only option exposing the virtualization driver package.
-
-        To specify which driver to use for the VM, use the `services.virby.driver` option instead.
-      '';
-    };
-
-    extraConfig = lib.mkOption {
-      type = lib.types.deferredModule;
+    sharedDirectories = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
       default = { };
-      description = ''
-        Additional NixOS modules to include in the VM's system configuration.
-
-        The VM's default configuration allows it to be securely used as a builder. Be aware when
-        using this option, that additional configuration could potentially expose the VM to
-        security risks such as compromised derivations being added to the nix store.
-
-        Any changes made to this option's value will cause a rebuild of the VM's disk image, and
-        the copy-on-write overlay image will be recreated from the new base image.
-
-        Options defined here which are also defined by the default configuration, but not forced in
-        the default configuration, will override the default values. Some options in the default
-        configuration are forced (with `lib.mkForce`), such as `networking.hostName`. Any options
-        defined here which are forced in the default configuration will be silently ignored.
-      '';
+      example = {
+        project = "/Users/alice/work";
+      };
+      description = "Explicit host mounts in the isolated machine, under /mnt/virtiofs/<name>. These expose host files to the guest.";
     };
-
-    memory = lib.mkOption {
-      type = with lib.types; either int str;
-      default = 6144;
-      description = ''
-        The amount of memory to allocate to the VM in MiB.
-
-        This can be specified as either: an integer representing an amount in MiB, e.g., `6144`, or
-        a string, e.g., `"6GiB"`.
-      '';
-    };
-
-    nestedVirtualization = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = ''
-        Whether to enable nested virtualization for the driver.
-
-        Nested virtualization requires an M3 or later CPU and macOS 15+. Since Nix lacks the ability to
-        check the CPU version, the vm-runner will check at runtime. If the CPU is not compatible, vm-runner
-        will print a warning in the log file and ignore the option.
-      '';
-    };
-
-    onDemand = lib.mkOption {
-      type =
-        with lib.types;
-        (submodule {
-          options = {
-            enable = lib.mkOption {
-              type = bool;
-              default = false;
-              description = ''
-                Whether to enable on-demand activation of the VM.
-              '';
-            };
-            ttl = lib.mkOption {
-              type = int;
-              default = 180;
-              description = ''
-                This specifies the number of minutes of inactivity which must pass before the VM
-                shuts down.
-
-                This option is only relevant when `onDemand.enable` is true.
-              '';
-            };
-          };
-        });
-      default = { };
-      description = ''
-        By default, the VM is always-on, running as a daemon in the background, meaning the VM will
-        always be consuming cpu and memory resources.
-
-        When enabled, this option will allow the VM to be activated on-demand; when not in use, the
-        VM will not be running. When a build job requiring use of the VM is initiated, it signals
-        the VM to start, and once an SSH connection can be established, the VM continues the build.
-        After a period of time passes in which the VM stays idle, it will shut down.
-
-        By default, the VM waits 3 hours before shutting down, but this can be configured using the
-        option `onDemand.ttl`.
-      '';
-    };
-
     port = lib.mkOption {
       type = lib.types.port;
       default = 31222;
-      description = ''
-        The SSH port used by the VM.
-      '';
     };
-
-    rosetta = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = ''
-        Whether to enable Rosetta support for the VM.
-
-        This allows the VM to build x86_64-linux packages using Rosetta translation. It is
-        recommended to only enable this option if you need that functionality, as Rosetta causes a slight
-        performance decrease in VMs when enabled, even when it's not being utilized.
-      '';
+    speedFactor = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 1;
     };
-
-    sharedDirectories = lib.mkOption {
-      type = with lib.types; attrsOf str;
-      default = { };
-      description = ''
-        An attribute set of directories that will be shared with the VM as virtio-fs devices.
-
-        The attribute name will be used as the mount tag.
-      '';
-      example = {
-        tmp-share = "/tmp/virby";
+    guestConfig = lib.mkOption {
+      type = lib.types.lines;
+      default = "";
+      example = "environment.systemPackages = with pkgs; [ git ];";
+      description = "Additional NixOS module declarations evaluated in the OrbStack guest. Changes are applied with nixos-rebuild; use only trusted input.";
+    };
+    onDemand = {
+      enable = lib.mkEnableOption "start the Orby machine when a build connects";
+      ttl = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 180;
+        description = "Idle time in minutes before the named machine is stopped.";
       };
     };
-
-    speedFactor = lib.mkOption {
-      type = lib.types.int;
-      default = 1;
-      description = ''
-        The speed factor to set for the VM in `nix.buildMachines`.
-
-        This is an arbitrary integer that indicates the speed of this builder, relative to other
-        builders. Higher is faster.
-      '';
-    };
-
     supportDeterminateNix = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = ''
-        Whether to enable support for using Virby with Determinate Nix.
-
-        When enabled, the config will set `determinateNix.buildMachines` instead of
-        `nix.buildMachines`. This requires that the Determinate module for Nix-darwin is already
-        imported in your configuration and will throw an error otherwise.
-      '';
+      description = "Register the builder with Determinate Nix rather than nix-darwin's Nix.";
     };
   };
 }
