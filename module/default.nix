@@ -49,6 +49,7 @@ let
       nix.settings.trusted-users = [ "builder" ];
       nix.settings.experimental-features = [ "nix-command" "flakes" ];
       nix.settings.auto-optimise-store = true;
+      ${lib.optionalString cfg.rosetta ''nix.settings.extra-platforms = lib.mkAfter [ "x86_64-linux" ];''}
       # OrbStack runs its NixOS distribution as an LXC machine. Mounting
       # debugfs there requires privileges the machine does not have and makes
       # nixos-rebuild switch fail even though the builder itself is healthy.
@@ -113,7 +114,7 @@ let
       hostName = "orby-vm";
       maxJobs = cfg.cores;
       protocol = "ssh-ng";
-      systems = [ "aarch64-linux" ];
+      systems = [ "aarch64-linux" ] ++ lib.optional cfg.rosetta "x86_64-linux";
       supportedFeatures = [
         "benchmark"
         "big-parallel"
@@ -174,6 +175,12 @@ in
           echo "Orby: orbctl must resolve to an executable absolute path: $orbctl_bin" >&2
           exit 1
         fi
+        ${lib.optionalString cfg.rosetta ''
+          if [[ "$(orb config get rosetta)" != true ]]; then
+            echo "Orby: enable Rosetta in OrbStack before enabling services.orby.rosetta" >&2
+            exit 1
+          fi
+        ''}
         /bin/mkdir -p ${state}
         # The unprivileged runner reads its configuration in this directory.
         # Private keys and the ownership marker themselves stay root-only.

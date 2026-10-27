@@ -65,6 +65,11 @@ let
     onDemand.enable = true;
     sharedDirectories.project = "/Users/alice/project";
   };
+  rosetta = evaluate {
+    enable = true;
+    user = "alice";
+    rosetta = true;
+  };
   disabled = evaluate { enable = false; };
 in
 assert builtins.all (x: x.assertion) enabled.assertions;
@@ -98,6 +103,11 @@ assert lib.hasInfix "systemctl start sshd-keygen.service"
 assert lib.hasInfix "orb config set machine.orby-builder.cpu"
   enabled.system.activationScripts.extraActivation.text;
 assert
+  !(lib.hasInfix "orb config get rosetta" enabled.system.activationScripts.extraActivation.text);
+assert lib.hasInfix "orb config get rosetta" rosetta.system.activationScripts.extraActivation.text;
+assert lib.hasInfix "enable Rosetta in OrbStack"
+  rosetta.system.activationScripts.extraActivation.text;
+assert
   enabled.nix.buildMachines == [
     {
       hostName = "orby-vm";
@@ -110,6 +120,18 @@ assert
       ];
       speedFactor = 1;
     }
+  ];
+assert
+  rosetta.nix.buildMachines == [
+    (
+      (builtins.head enabled.nix.buildMachines)
+      // {
+        systems = [
+          "aarch64-linux"
+          "x86_64-linux"
+        ];
+      }
+    )
   ];
 assert !(disabled.nix ? buildMachines);
 assert !onDemand.launchd.daemons.orbyd.serviceConfig.KeepAlive;

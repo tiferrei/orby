@@ -44,6 +44,7 @@
       example = "environment.systemPackages = with pkgs; [ git ];";
       description = "Additional NixOS module declarations evaluated in the OrbStack guest. Changes are applied with nixos-rebuild; use only trusted input.";
     };
+    rosetta = lib.mkEnableOption "x86_64-linux builds using OrbStack's Rosetta support";
     onDemand = {
       enable = lib.mkEnableOption "start the Orby machine when a build connects";
       ttl = lib.mkOption {

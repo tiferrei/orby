@@ -44,6 +44,8 @@ eventual purge. In a nix-darwin configuration:
     cores = 8;
     memoryMiB = 6144;
     diskSize = "100G";
+    # Optional: also build x86_64-linux with OrbStack's Rosetta support.
+    # rosetta = true;
   };
 }
 ```
@@ -54,6 +56,16 @@ the guest; unlike Virby, it needs no prebuilt disk-image cache or existing
 Linux builder. Orby generates its own SSH key for Nix under `/var/lib/orby`,
 uses a loopback-only SSH proxy, and registers a Nix `ssh-ng` build machine.
 Try an `aarch64-linux` build to verify that the guest is available.
+
+To also build `x86_64-linux`, enable Rosetta in OrbStack's system settings and
+set `services.orby.rosetta = true;`. Orby then registers both Linux
+platforms on the same ARM machine. Activation checks OrbStack's Rosetta setting
+and refuses the opt-in if it is off; it does not change OrbStack's global
+settings. The guest is configured to accept x86 builds using OrbStack's
+translation; Orby does not install a QEMU binfmt handler or create a separate
+Intel machine. After activation, verify a fresh `x86_64-linux` build on the Mac
+with local jobs disabled rather than relying on a cached package or a binary
+run outside Nix's build sandbox.
 
 ## Lifecycle
 
@@ -106,9 +118,10 @@ out of OrbStack's default host-file isolation.
 
 ## Limitations and security
 
-Orby currently exposes only `aarch64-linux` builds. Rosetta and nested
-virtualization are not enabled; do not advertise
-`x86_64-linux` or `kvm` until verified on the target machine. OrbStack
+By default Orby exposes only `aarch64-linux` builds. Optional `x86_64-linux`
+builds require OrbStack's Rosetta support and should be verified on the target
+Mac. Orby does not manage OrbStack's global Rosetta setting or advertise `kvm`:
+nested virtualization is not supported. OrbStack
 machines share one Linux kernel: even isolated machines are not equivalent to
 Virby's dedicated-kernel VMs as a security boundary. The Orby machine is
 created with OrbStack's `--isolated` mode, without host filesystem mounts
