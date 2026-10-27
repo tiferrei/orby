@@ -10,8 +10,8 @@ let
   state = "/var/lib/orby";
   key = "${state}/builder_ed25519";
   port = toString cfg.port;
-  diskMatch = builtins.match "([1-9][0-9]*)G" cfg.diskSize;
-  diskGiB = if diskMatch == null then 0 else lib.toInt (builtins.head diskMatch);
+  diskMatch = if cfg.diskSize == null then null else builtins.match "([1-9][0-9]*)G" cfg.diskSize;
+  diskGiB = if diskMatch == null then null else lib.toInt (builtins.head diskMatch);
   runner = self.packages.${pkgs.stdenv.hostPlatform.system}.orby;
   runDaemon = pkgs.writeShellScript "orbyd-start" ''
     export HOME=$(/usr/bin/dscl . -read /Users/${cfg.user} NFSHomeDirectory | /usr/bin/awk '{print $2}')
@@ -79,7 +79,7 @@ let
   buildMachines = [
     {
       hostName = "orby-vm";
-      maxJobs = cfg.cores;
+      maxJobs = if cfg.cores == null then 8 else cfg.cores;
       protocol = "ssh-ng";
       systems = [ "aarch64-linux" ] ++ lib.optional cfg.rosetta "x86_64-linux";
       supportedFeatures = [
@@ -105,11 +105,11 @@ in
           message = "services.orby.user must name the macOS user who owns OrbStack.";
         }
         {
-          assertion = diskMatch != null;
+          assertion = cfg.diskSize == null || diskMatch != null;
           message = "services.orby.diskSize must be a positive number of GiB, e.g. 100G.";
         }
         {
-          assertion = cfg.memoryMiB >= 1024;
+          assertion = cfg.memoryMiB == null || cfg.memoryMiB >= 1024;
           message = "services.orby.memoryMiB must be at least 1024.";
         }
         {

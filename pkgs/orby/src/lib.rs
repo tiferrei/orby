@@ -2,7 +2,7 @@ pub mod config;
 pub mod machine;
 pub mod proxy;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 pub mod activation;
 #[cfg(target_os = "macos")]
 pub mod launchd;

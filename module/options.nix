@@ -15,16 +15,22 @@
       description = "Override the OrbStack CLI with an absolute path. By default Orby uses the first orbctl in the machine owner's login PATH.";
     };
     cores = lib.mkOption {
-      type = lib.types.ints.positive;
-      default = 8;
+      type = lib.types.nullOr lib.types.ints.positive;
+      default = null;
+      example = 8;
+      description = "OrbStack machine CPU limit in cores; null leaves it unlimited. Nix still schedules at most 8 concurrent builds by default.";
     };
     memoryMiB = lib.mkOption {
-      type = lib.types.ints.positive;
-      default = 6144;
+      type = lib.types.nullOr lib.types.ints.positive;
+      default = null;
+      example = 6144;
+      description = "OrbStack machine memory limit in MiB; null leaves it unlimited.";
     };
     diskSize = lib.mkOption {
-      type = lib.types.str;
-      default = "100G";
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "100G";
+      description = "OrbStack machine disk limit in GiB, e.g. 100G; null leaves it unlimited.";
     };
     sharedDirectories = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;

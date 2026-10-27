@@ -41,9 +41,10 @@ and eventual purge. In a nix-darwin configuration:
     user = "my-macos-username";
     # Optional: override PATH discovery with an absolute executable path.
     # orbctl = "/opt/homebrew/bin/orbctl";
-    cores = 8;
-    memoryMiB = 6144;
-    diskSize = "100G";
+    # Optional per-machine limits; omitted values leave OrbStack unrestricted.
+    # cores = 8;
+    # memoryMiB = 6144;
+    # diskSize = "100G";
     # Optional: also build x86_64-linux with OrbStack's Rosetta support.
     # rosetta = true;
   };
@@ -56,6 +57,12 @@ the guest; unlike Virby, it needs no prebuilt disk-image cache or existing
 Linux builder. Orby generates its own SSH key for Nix under `/var/lib/orby`,
 uses a loopback-only SSH proxy, and registers a Nix `ssh-ng` build machine.
 Try an `aarch64-linux` build to verify that the guest is available.
+
+CPU, memory, and disk limits are independently optional. Omitting a limit (or
+setting it to `null`) removes that per-machine limit on an existing Orby
+machine too. OrbStack's global memory and CPU limits still apply. Without a
+`cores` limit, Nix schedules up to 8 concurrent builds on Orby by default;
+this is a build-queue setting, not an OrbStack CPU limit.
 
 To also build `x86_64-linux`, enable Rosetta in OrbStack's system settings and
 set `services.orby.rosetta = true;`. Orby then registers both Linux

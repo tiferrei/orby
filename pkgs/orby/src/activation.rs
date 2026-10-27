@@ -21,10 +21,10 @@ use crate::{
 pub struct ActivationConfig {
     owner: String,
     orbctl: Option<String>,
-    cores: u32,
-    memory_mib: u64,
-    disk_gib: u64,
-    disk_size: String,
+    cores: Option<u32>,
+    memory_mib: Option<u64>,
+    disk_gib: Option<u64>,
+    disk_size: Option<String>,
     shared_directories: BTreeMap<String, String>,
     port: u16,
     on_demand: bool,
@@ -39,10 +39,14 @@ pub struct ActivationConfig {
 impl ActivationConfig {
     fn validate(&self) -> Result<()> {
         validate_owner(&self.owner)?;
-        if self.cores == 0
-            || self.memory_mib < 1024
-            || self.disk_gib == 0
-            || self.disk_size != format!("{}G", self.disk_gib)
+        let disk_valid = match (&self.disk_gib, &self.disk_size) {
+            (None, None) => true,
+            (Some(disk), Some(size)) => *disk > 0 && *size == format!("{disk}G"),
+            _ => false,
+        };
+        if self.cores == Some(0)
+            || self.memory_mib.is_some_and(|memory| memory < 1024)
+            || !disk_valid
             || self.port < 1024
             || self.ttl == 0
             || self
@@ -69,6 +73,57 @@ impl ActivationConfig {
         }
         Ok(())
     }
+}
+
+// OrbStack uses zero for an unset per-machine resource limit. Fresh machines
+// omit unset limits from `create`; existing machines clear them with `set`.
+fn resource_settings(config: &ActivationConfig) -> Result<[(&'static str, String); 3]> {
+    let disk_bytes = config
+        .disk_gib
+        .unwrap_or_default()
+        .checked_mul(1024 * 1024 * 1024)
+        .ok_or_else(|| error("disk size overflow"))?;
+    Ok([
+        (
+            "machine.orby.cpu",
+            config.cores.unwrap_or_default().to_string(),
+        ),
+        (
+            "machine.orby.memory_mib",
+            config.memory_mib.unwrap_or_default().to_string(),
+        ),
+        ("machine.orby.disk_bytes", disk_bytes.to_string()),
+    ])
+}
+
+fn creation_resource_args(config: &ActivationConfig) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(cores) = config.cores {
+        args.extend(["--cpus".into(), cores.to_string()]);
+    }
+    if let Some(memory) = config.memory_mib {
+        args.extend(["--memory".into(), format!("{}G", memory.div_ceil(1024))]);
+    }
+    if let Some(disk) = &config.disk_size {
+        args.extend(["--disk".into(), disk.clone()]);
+    }
+    args
+}
+
+fn validate_disk_change(previous: &str, requested: Option<u64>) -> Result<()> {
+    if previous.is_empty() {
+        return Ok(());
+    }
+    let disk: u64 = previous
+        .trim()
+        .rsplit(':')
+        .next()
+        .ok_or_else(|| error("invalid saved resources"))?
+        .parse()?;
+    if requested.is_some_and(|size| disk != 0 && size < disk) {
+        return Err(error("shrinking the managed disk is not supported"));
+    }
+    Ok(())
 }
 
 fn validate_owner(owner: &str) -> Result<()> {
@@ -303,6 +358,7 @@ pub fn activate(path: &Path) -> Result<()> {
     fs::create_dir_all(STATE)?;
     fs::set_permissions(STATE, fs::Permissions::from_mode(0o755))?;
     let owner_path = Path::new(STATE).join("owner");
+    let mut created = false;
     if owner_path.exists() {
         if fs::read_to_string(&owner_path)?.trim() != config.owner {
             return Err(error("machine belongs to a different owner"));
@@ -322,19 +378,11 @@ pub fn activate(path: &Path) -> Result<()> {
         for mount in &mounts {
             create.extend(["--mount", mount]);
         }
-        let cores = config.cores.to_string();
-        let memory = format!("{}G", config.memory_mib.div_ceil(1024));
-        create.extend([
-            "--cpus",
-            &cores,
-            "--memory",
-            &memory,
-            "--disk",
-            &config.disk_size,
-            "nixos",
-            MACHINE,
-        ]);
+        let limits = creation_resource_args(&config);
+        create.extend(limits.iter().map(String::as_str));
+        create.extend(["nixos", MACHINE]);
         orb.call_verbose(&create)?;
+        created = true;
         let identity = uuid()?;
         private_write(&Path::new(STATE).join("identity"), &format!("{identity}\n"))?;
         orb.call(&["start", MACHINE])?;
@@ -365,44 +413,28 @@ pub fn activate(path: &Path) -> Result<()> {
         fs::remove_file(Path::new(STATE).join("orbctl-bin"))?;
     }
 
-    let resources = format!("{}:{}:{}", config.cores, config.memory_mib, config.disk_gib);
+    // Keep the old colon-separated state format; zero represents no limit.
+    let resources = format!(
+        "{}:{}:{}",
+        config.cores.unwrap_or_default(),
+        config.memory_mib.unwrap_or_default(),
+        config.disk_gib.unwrap_or_default()
+    );
     let previous = optional_file(&Path::new(STATE).join("resources"))?.unwrap_or_default();
     let mut restart = false;
     if previous.trim() != resources {
-        if !previous.is_empty() {
-            let disk: u64 = previous
-                .trim()
-                .rsplit(':')
-                .next()
-                .ok_or_else(|| error("invalid saved resources"))?
-                .parse()?;
-            if config.disk_gib < disk {
-                return Err(error("shrinking the managed disk is not supported"));
+        validate_disk_change(&previous, config.disk_gib)?;
+        // On creation, don't set zero for limits omitted from `create`, but
+        // apply explicit settings (including exact MiB after the rounded
+        // --memory flag). Existing machines must clear omitted limits too.
+        for (key, value) in resource_settings(&config)? {
+            if !created || value != "0" {
+                orb.call(&["config", "set", key, &value])?;
             }
         }
-        orb.call(&[
-            "config",
-            "set",
-            "machine.orby.cpu",
-            &config.cores.to_string(),
-        ])?;
-        orb.call(&[
-            "config",
-            "set",
-            "machine.orby.memory_mib",
-            &config.memory_mib.to_string(),
-        ])?;
-        orb.call(&[
-            "config",
-            "set",
-            "machine.orby.disk_bytes",
-            &config
-                .disk_gib
-                .checked_mul(1024 * 1024 * 1024)
-                .ok_or_else(|| error("disk size overflow"))?
-                .to_string(),
-        ])?;
-        restart = !previous.is_empty();
+        if !created {
+            restart = true;
+        }
     }
     let mounts = config
         .shared_directories
@@ -555,5 +587,70 @@ mod tests {
         config.shared_directories.remove("bad:tag");
         config.orbctl = Some("orbctl".into());
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn resource_limits_can_be_independently_unset() {
+        let mut config: ActivationConfig = serde_json::from_str(
+            r#"{
+            "owner":"alice", "orbctl":null, "cores":null, "memory_mib":null,
+            "disk_gib":null, "disk_size":null, "shared_directories":{},
+            "port":31222, "on_demand":true, "ttl":900, "rosetta":false,
+            "guest_module":"/nix/store/guest/module.nix",
+            "guest_wrapper":"/nix/store/guest/configuration.nix",
+            "ssh":"/nix/store/ssh", "ssh_keygen":"/nix/store/ssh-keygen"
+        }"#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        assert!(creation_resource_args(&config).is_empty());
+        assert_eq!(
+            resource_settings(&config).unwrap(),
+            [
+                ("machine.orby.cpu", "0".into()),
+                ("machine.orby.memory_mib", "0".into()),
+                ("machine.orby.disk_bytes", "0".into()),
+            ]
+        );
+
+        config.cores = Some(4);
+        config.disk_gib = Some(100);
+        config.disk_size = Some("100G".into());
+        config.validate().unwrap();
+        assert_eq!(
+            creation_resource_args(&config),
+            ["--cpus", "4", "--disk", "100G"]
+        );
+        config.memory_mib = Some(1536);
+        config.validate().unwrap();
+        assert_eq!(
+            creation_resource_args(&config),
+            ["--cpus", "4", "--memory", "2G", "--disk", "100G"]
+        );
+        config.memory_mib = None;
+        assert_eq!(
+            resource_settings(&config).unwrap(),
+            [
+                ("machine.orby.cpu", "4".into()),
+                ("machine.orby.memory_mib", "0".into()),
+                ("machine.orby.disk_bytes", "107374182400".into()),
+            ]
+        );
+        config.disk_size = None;
+        assert!(config.validate().is_err());
+        config.disk_gib = None;
+        config.memory_mib = Some(512);
+        assert!(config.validate().is_err());
+        config.memory_mib = None;
+        config.cores = Some(0);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn old_disk_limits_can_be_cleared_without_shrinking() {
+        validate_disk_change("8:6144:100\n", None).unwrap();
+        validate_disk_change("8:6144:100\n", Some(100)).unwrap();
+        assert!(validate_disk_change("8:6144:100\n", Some(99)).is_err());
+        validate_disk_change("0:0:0\n", Some(100)).unwrap();
     }
 }

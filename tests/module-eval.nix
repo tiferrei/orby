@@ -54,6 +54,18 @@ let
     user = "alice";
     diskSize = "nope";
   };
+  limited = evaluate {
+    enable = true;
+    user = "alice";
+    cores = 4;
+    memoryMiB = 4096;
+    diskSize = "80G";
+  };
+  invalidMemory = evaluate {
+    enable = true;
+    user = "alice";
+    memoryMiB = 512;
+  };
   onDemand = evaluate {
     enable = true;
     user = "alice";
@@ -78,6 +90,12 @@ assert !(lib.hasInfix "activate" disabled.system.activationScripts.postActivatio
 assert !(lib.hasInfix "orb delete" disabled.system.activationScripts.postActivation.text);
 assert lib.any (x: !x.assertion && lib.hasInfix "orbctl" x.message) invalidCLI.assertions;
 assert lib.any (x: !x.assertion && lib.hasInfix "diskSize" x.message) invalidDisk.assertions;
+assert lib.any (x: !x.assertion && lib.hasInfix "memoryMiB" x.message) invalidMemory.assertions;
+assert enabled.services.orby.cores == null;
+assert enabled.services.orby.memoryMiB == null;
+assert enabled.services.orby.diskSize == null;
+assert builtins.all (x: x.assertion) limited.assertions;
+assert (builtins.head limited.nix.buildMachines).maxJobs == 4;
 assert
   enabled.nix.buildMachines == [
     {
