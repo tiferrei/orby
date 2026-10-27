@@ -8,7 +8,7 @@ import (
 
 func TestReadConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runner.json")
-	if err := os.WriteFile(path, []byte(`{"orbctl":"/opt/homebrew/bin/orbctl","machine":"orby-builder","port":31222,"on-demand":true,"ttl":900}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"orbctl":"/opt/homebrew/bin/orbctl","machine":"orby","port":31222,"on-demand":true,"ttl":900}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("ORBY_ORBCTL", "/should/not/override/config")
@@ -16,7 +16,7 @@ func TestReadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Orbctl != "/opt/homebrew/bin/orbctl" || cfg.Machine != "orby-builder" || cfg.Port != 31222 || !cfg.OnDemand || cfg.TTL != 900 {
+	if cfg.Orbctl != "/opt/homebrew/bin/orbctl" || cfg.Machine != "orby" || cfg.Port != 31222 || !cfg.OnDemand || cfg.TTL != 900 {
 		t.Fatalf("unexpected configuration: %+v", cfg)
 	}
 }
@@ -24,7 +24,7 @@ func TestReadConfig(t *testing.T) {
 func TestReadConfigRejectsMissingOrRelativeOrbctl(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runner.json")
 	for _, value := range []string{"", "orbctl"} {
-		if err := os.WriteFile(path, []byte(`{"orbctl":"`+value+`","machine":"orby-builder","port":31222,"ttl":900}`), 0600); err != nil {
+		if err := os.WriteFile(path, []byte(`{"orbctl":"`+value+`","machine":"orby","port":31222,"ttl":900}`), 0600); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := readConfig(path); err == nil {

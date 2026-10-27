@@ -14,8 +14,8 @@
       darwinModules.orby = self.darwinModules.default;
 
       packages.${system} = {
-        default = self.packages.${system}.orby-runner;
-        orby-runner = pkgs.callPackage ./pkgs/orby-runner { };
+        default = self.packages.${system}.orby;
+        orby = pkgs.callPackage ./pkgs/orby { };
       };
 
       checks.${system}.module-eval =

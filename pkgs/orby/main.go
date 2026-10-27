@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-
-	"orby-runner/internal/runner"
 )
 
 const configFile = "/var/lib/orby/runner.json"
@@ -18,23 +16,23 @@ func main() {
 		slog.Error("load configuration", "error", err)
 		os.Exit(1)
 	}
-	if err := runner.Run(cfg); err != nil {
+	if err := Run(cfg); err != nil {
 		slog.Error("runner stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
-func readConfig(path string) (runner.Config, error) {
+func readConfig(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return runner.Config{}, err
+		return Config{}, err
 	}
-	var cfg runner.Config
+	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return runner.Config{}, err
+		return Config{}, err
 	}
 	if !filepath.IsAbs(cfg.Orbctl) || cfg.Machine == "" || cfg.Port < 1024 || cfg.Port > 65535 || cfg.TTL < 1 {
-		return runner.Config{}, fmt.Errorf("invalid Orby configuration: %+v", cfg)
+		return Config{}, fmt.Errorf("invalid Orby configuration: %+v", cfg)
 	}
 	return cfg, nil
 }

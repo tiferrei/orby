@@ -1,7 +1,8 @@
-package runner
+package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"reflect"
@@ -14,7 +15,7 @@ func TestMachineLifecycle(t *testing.T) {
 	var mu sync.Mutex
 	var calls [][]string
 	m := &Machine{
-		Config: Config{Orbctl: "/usr/local/bin/orbctl", Machine: "orby-builder"},
+		Config: Config{Orbctl: "/usr/local/bin/orbctl", Machine: "orby"},
 		Exec: func(_ context.Context, bin string, args ...string) ([]byte, error) {
 			if bin != "/usr/local/bin/orbctl" {
 				t.Fatalf("wrong binary: %q", bin)
@@ -50,11 +51,11 @@ func TestMachineLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{
-		{"start", "orby-builder"},
-		{"run", "-m", "orby-builder", "-u", "root", "hostname", "-I"},
-		{"stop", "orby-builder"},
-		{"start", "orby-builder"},
-		{"run", "-m", "orby-builder", "-u", "root", "hostname", "-I"},
+		{"start", "orby"},
+		{"run", "-m", "orby", "-u", "root", "hostname", "-I"},
+		{"stop", "orby"},
+		{"start", "orby"},
+		{"run", "-m", "orby", "-u", "root", "hostname", "-I"},
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -65,7 +66,7 @@ func TestMachineLifecycle(t *testing.T) {
 
 func TestMachineStartFailure(t *testing.T) {
 	m := &Machine{
-		Config: Config{Orbctl: "orbctl", Machine: "orby-builder"},
+		Config: Config{Orbctl: "orbctl", Machine: "orby"},
 		Exec: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			return nil, fmt.Errorf("no machine: %s", args[0])
 		},
@@ -80,7 +81,7 @@ func TestMachineStartFailure(t *testing.T) {
 func TestIdleStopIsCancelledByNewConnection(t *testing.T) {
 	stopped := make(chan struct{}, 2)
 	m := &Machine{
-		Config: Config{Orbctl: "orbctl", Machine: "orby-builder", OnDemand: true},
+		Config: Config{Orbctl: "orbctl", Machine: "orby", OnDemand: true},
 		Exec: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			if args[0] == "stop" {
 				stopped <- struct{}{}
@@ -102,5 +103,37 @@ func TestIdleStopIsCancelledByNewConnection(t *testing.T) {
 	case <-stopped:
 	case <-time.After(time.Second):
 		t.Fatal("did not stop idle machine")
+	}
+}
+
+func TestProxyServeListenerClose(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		cancel bool
+	}{
+		{name: "unexpected close"},
+		{name: "context cancellation", cancel: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if test.cancel {
+				cancel()
+			} else if err := listener.Close(); err != nil {
+				t.Fatal(err)
+			}
+			p := &Proxy{Machine: &Machine{Config: Config{OnDemand: true}}}
+			err = p.Serve(ctx, listener)
+			if test.cancel && err != nil {
+				t.Fatalf("cancellation: %v", err)
+			}
+			if !test.cancel && !errors.Is(err, net.ErrClosed) {
+				t.Fatalf("unexpected close: %v", err)
+			}
+		})
 	}
 }

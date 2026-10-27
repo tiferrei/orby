@@ -1,17 +1,26 @@
-package runner
+//go:build darwin
 
+package main
+
+/*
+#include <launch.h>
+#include <stdlib.h>
+*/
+import "C"
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 )
 
 type Config struct {
@@ -192,17 +201,35 @@ func closeWrite(conn net.Conn) {
 	}
 }
 
+func activationListener(port int) (net.Listener, error) {
+	name := C.CString("Listener")
+	defer C.free(unsafe.Pointer(name))
+	var fds *C.int
+	var count C.size_t
+	if code := C.launch_activate_socket(name, &fds, &count); code != 0 || count != 1 {
+		return nil, fmt.Errorf("launchd socket activation failed: %d, count %d", code, count)
+	}
+	defer C.free(unsafe.Pointer(fds))
+	file := os.NewFile(uintptr(*fds), "Listener")
+	defer file.Close()
+	listener, err := net.FileListener(file)
+	if err != nil {
+		return nil, err
+	}
+	if addr, ok := listener.Addr().(*net.TCPAddr); !ok || addr.Port != port {
+		listener.Close()
+		return nil, fmt.Errorf("unexpected launchd listener: %s", listener.Addr())
+	}
+	return listener, nil
+}
+
 func Run(cfg Config) error {
 	listener, err := activationListener(cfg.Port)
 	if err != nil {
 		return err
 	}
-	ctx, stop := context.WithCancel(context.Background())
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	interrupt := make(chan os.Signal, 1)
-	notifySignals(interrupt)
-	defer stopSignals(interrupt)
-	go func() { <-interrupt; stop() }()
 	m := &Machine{Config: cfg}
 	p := &Proxy{Machine: m, TTL: time.Duration(cfg.TTL) * time.Second}
 	err = p.Serve(ctx, listener)
@@ -212,9 +239,6 @@ func Run(cfg Config) error {
 		if stopErr := m.Stop(stopCtx); stopErr != nil {
 			slog.Error("stop machine", "error", stopErr)
 		}
-	}
-	if errors.Is(err, net.ErrClosed) {
-		return nil
 	}
 	return err
 }

@@ -1,7 +1,7 @@
 { buildGoModule, lib }:
 
 buildGoModule {
-  pname = "orby-runner";
+  pname = "orby";
   version = "0.1.0";
   src = ./.;
   vendorHash = null;
@@ -10,6 +10,6 @@ buildGoModule {
     description = "OrbStack machine lifecycle and SSH proxy for Orby";
     license = lib.licenses.mit;
     platforms = lib.platforms.darwin;
-    mainProgram = "orby-runner";
+    mainProgram = "orby";
   };
 }

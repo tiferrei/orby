@@ -84,16 +84,16 @@ disable, Orby deletes the machine and its host state. If deletion fails, it
 reports an activation error instead of silently dropping the ownership record.
 Upgrading from a version that saved `orbctl-bin` requires one enabled activation
 before disabling Orby; a direct disable without `runner.json` refuses to purge.
-Orby refuses to take over a pre-existing machine named `orby-builder`.
+Orby refuses to take over a pre-existing machine named `orby`.
 It also checks a machine identity stored on both the host and the guest before
 reconfiguring or deleting an existing machine. If first-time provisioning was
 interrupted before that identity was installed, Orby reports a failure rather
 than deleting an unverified machine. If you have confirmed that Orby created
-`orby-builder`, restore the interrupted identity before retrying:
+`orby`, restore the interrupted identity before retrying:
 
 ```sh
-orbctl run -m orby-builder -u root mkdir -p /etc/nixos/orby
-orbctl run -m orby-builder -u root sh -c \
+orbctl run -m orby -u root mkdir -p /etc/nixos/orby
+orbctl run -m orby -u root sh -c \
   'printf "%s\n" "$1" > /etc/nixos/orby/identity' sh \
   "$(sudo cat /var/lib/orby/identity)"
 ```
@@ -146,17 +146,17 @@ integration tests.
 
 ## Tests
 
-From `pkgs/orby-runner`, run `go test -race ./...` for the unit tests and the
+From `pkgs/orby`, run `go test -race ./...` for the unit tests and the
 fake-`orbctl` subprocess tests. On a Mac with OrbStack installed, opt in to a
 real CLI lifecycle test with:
 
 ```sh
-go test -tags=orbctl_integration -run '^TestOrbctlLifecycle$' ./internal/runner -count=1 -v
+go test -tags=orbctl_integration -run '^TestOrbctlLifecycle$' . -count=1 -v
 ```
 
 The opt-in test creates an isolated, uniquely named `orby-test-*` NixOS machine,
 starts and stops it, and deletes it after verifying its identity. It never
-controls `orby-builder`. It may download OrbStack's NixOS distribution and
+controls `orby`. It may download OrbStack's NixOS distribution and
 leaves the test machine in place if ownership cannot be verified; check the
 test output for its name if cleanup fails. The test stubs the SSH connection,
 so a real builder and activation still require a separate Mac smoke test.

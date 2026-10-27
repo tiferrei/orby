@@ -11,6 +11,14 @@ jobs:
       - uses: actions/checkout@v6
       - uses: cachix/install-nix-action@v31
       - run: nix flake check --all-systems --no-build
+
+  runner-tests:
+    runs-on: macos-15-arm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: pkgs/orby/go.mod
       - name: Test runner and fake orbctl interaction
-        working-directory: pkgs/orby-runner
-        run: nix shell nixpkgs#go --command env CGO_ENABLED=0 go test ./...
+        working-directory: pkgs/orby
+        run: go test -race ./...

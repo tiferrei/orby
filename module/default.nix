@@ -7,7 +7,7 @@
 }:
 let
   cfg = config.services.orby;
-  name = "orby-builder";
+  name = "orby";
   state = "/var/lib/orby";
   runnerConfigFile = "${state}/runner.json";
   key = "${state}/builder_ed25519";
@@ -17,7 +17,7 @@ let
   mounts = lib.mapAttrsToList (tag: path: "${path}:/mnt/virtiofs/${tag}") cfg.sharedDirectories;
   mountFlags = lib.concatMapStringsSep " " (mount: "--mount ${lib.escapeShellArg mount}") mounts;
   mountSetting = lib.concatStringsSep "," mounts;
-  runner = self.packages.${pkgs.stdenv.hostPlatform.system}.orby-runner;
+  runner = self.packages.${pkgs.stdenv.hostPlatform.system}.orby;
   runDaemon = pkgs.writeShellScript "orbyd-start" ''
     export HOME=$(/usr/bin/dscl . -read /Users/${cfg.user} NFSHomeDirectory | /usr/bin/awk '{print $2}')
     if [[ -z "$HOME" ]]; then
@@ -62,7 +62,7 @@ let
       imports = [ /etc/nixos/configuration.nix /etc/nixos/orby/module.nix ];
     }
   '';
-  runnerConfigTemplate = pkgs.writeText "orby-runner-template.json" (
+  runnerConfigTemplate = pkgs.writeText "orby-config-template.json" (
     builtins.toJSON {
       machine = name;
       port = cfg.port;
@@ -78,6 +78,21 @@ let
     }
     get_home() {
       /usr/bin/dscl . -read "/Users/$1" NFSHomeDirectory | /usr/bin/awk '{print $2}'
+    }
+    # Name alone never establishes ownership. Check both the local record and
+    # the marker inside the guest before reconciling or deleting the machine.
+    verify_owned_machine() {
+      local action="$1" guest_identity
+      if [[ ! -f ${state}/identity ]] || ! orb info ${name} >/dev/null; then
+        echo "Orby: missing machine identity or machine; refusing to $action ${name}" >&2
+        return 1
+      fi
+      orb start ${name}
+      guest_identity=$(orb run -m ${name} -u root cat /etc/nixos/orby/identity 2>/dev/null || true)
+      if [[ -z "$guest_identity" || "$guest_identity" != "$(/bin/cat ${state}/identity)" ]]; then
+        echo "Orby: machine identity mismatch; refusing to $action ${name}" >&2
+        return 1
+      fi
     }
     # OrbStack's push command can succeed without placing files in isolated
     # machines. Transfer bounded base64 chunks via orbctl run instead. Chunks
@@ -191,16 +206,7 @@ in
             echo "Orby: machine belongs to $saved_owner, not $owner" >&2
             exit 1
           fi
-          if ! orb info ${name} >/dev/null; then
-            echo "Orby: owned machine is missing; refusing automatic replacement" >&2
-            exit 1
-          fi
-          orb start ${name}
-          guest_identity=$(orb run -m ${name} -u root cat /etc/nixos/orby/identity 2>/dev/null || true)
-          if [[ -z "$guest_identity" || "$guest_identity" != "$(/bin/cat ${state}/identity)" ]]; then
-            echo "Orby: machine identity mismatch; refusing to manage ${name}" >&2
-            exit 1
-          fi
+          verify_owned_machine manage
         else
           # Refuse to adopt a machine based on its name alone.
           if orb info ${name} >/dev/null 2>&1; then
@@ -370,16 +376,7 @@ in
             exit 1
           fi
           # A failed deletion must not erase the only record of ownership.
-          if [[ ! -f ${state}/identity ]] || ! orb info ${name} >/dev/null; then
-            echo "Orby: missing machine identity or machine; refusing unverified purge" >&2
-            exit 1
-          fi
-          orb start ${name}
-          guest_identity=$(orb run -m ${name} -u root cat /etc/nixos/orby/identity 2>/dev/null || true)
-          if [[ -z "$guest_identity" || "$guest_identity" != "$(/bin/cat ${state}/identity)" ]]; then
-            echo "Orby: machine identity mismatch; refusing to delete ${name}" >&2
-            exit 1
-          fi
+          verify_owned_machine delete
           orb delete -f ${name}
           /bin/rm -rf ${state}
         fi

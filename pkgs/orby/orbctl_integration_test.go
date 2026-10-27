@@ -1,6 +1,6 @@
 //go:build darwin && orbctl_integration
 
-package runner
+package main
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 )
 
 // This opt-in test creates and deletes only its own randomly named, isolated
-// OrbStack machine. It never controls the production orby-builder machine.
+// OrbStack machine. It never controls the production orby machine.
 func TestOrbctlLifecycle(t *testing.T) {
 	bin, err := exec.LookPath("orbctl")
 	if err != nil {
