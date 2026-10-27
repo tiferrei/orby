@@ -18,8 +18,8 @@ builder while replacing its vfkit/krunkit VM backend with OrbStack.
 Install and start OrbStack under the macOS account that will own the machine.
 The account must be able to run `orbctl` without interaction. By default Orby
 uses the first `orbctl` found in that account's login `PATH` when activating,
-and saves the resolved path for its runner and eventual purge. In a nix-darwin
-configuration:
+and saves the resolved path in `/var/lib/orby/runner.json` for its runner and
+eventual purge. In a nix-darwin configuration:
 
 ```nix
 {
@@ -70,6 +70,8 @@ Orby starts the named machine when an SSH build connection arrives and stops
 it when idle; it never stops OrbStack itself or any other machine. On service
 disable, Orby deletes the machine and its host state. If deletion fails, it
 reports an activation error instead of silently dropping the ownership record.
+Upgrading from a version that saved `orbctl-bin` requires one enabled activation
+before disabling Orby; a direct disable without `runner.json` refuses to purge.
 Orby refuses to take over a pre-existing machine named `orby-builder`.
 It also checks a machine identity stored on both the host and the guest before
 reconfiguring or deleting an existing machine. If first-time provisioning was
@@ -118,6 +120,33 @@ without requiring the unfree OrbStack package in your Nix store. This fork does
 not automatically migrate or delete a Virby installation. To purge Orby,
 first switch with `services.orby.enable = false` while keeping the Orby module
 imported; remove the import only after that switch succeeds.
+
+## Development
+
+On Apple Silicon macOS, run `nix develop` in this checkout. It supplies Go, a C
+compiler for the Darwin-specific runner and race tests, gopls, gofumpt, and Nix
+tooling; no separate Go installation is needed. Alternatively, if you have
+direnv with nix-direnv and its shell hook enabled, run `direnv allow` once to
+load the same shell through `.envrc`. Go caches stay under the ignored `.cache/`
+directory. OrbStack and `orbctl` must still be installed on the Mac for real
+integration tests.
+
+## Tests
+
+From `pkgs/orby-runner`, run `go test -race ./...` for the unit tests and the
+fake-`orbctl` subprocess tests. On a Mac with OrbStack installed, opt in to a
+real CLI lifecycle test with:
+
+```sh
+go test -tags=orbctl_integration -run '^TestOrbctlLifecycle$' ./internal/runner -count=1 -v
+```
+
+The opt-in test creates an isolated, uniquely named `orby-test-*` NixOS machine,
+starts and stops it, and deletes it after verifying its identity. It never
+controls `orby-builder`. It may download OrbStack's NixOS distribution and
+leaves the test machine in place if ownership cannot be verified; check the
+test output for its name if cleanup fails. The test stubs the SSH connection,
+so a real builder and activation still require a separate Mac smoke test.
 
 ## Credits
 

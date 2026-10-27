@@ -2,7 +2,6 @@
 {
   config,
   lib,
-  options,
   pkgs,
   ...
 }:
@@ -10,6 +9,7 @@ let
   cfg = config.services.orby;
   name = "orby-builder";
   state = "/var/lib/orby";
+  runnerConfigFile = "${state}/runner.json";
   key = "${state}/builder_ed25519";
   port = toString cfg.port;
   diskMatch = builtins.match "([1-9][0-9]*)G" cfg.diskSize;
@@ -22,11 +22,6 @@ let
     export HOME=$(/usr/bin/dscl . -read /Users/${cfg.user} NFSHomeDirectory | /usr/bin/awk '{print $2}')
     if [[ -z "$HOME" ]]; then
       echo "Orby: machine owner's home directory is missing" >&2
-      exit 1
-    fi
-    export ORBY_ORBCTL=$(/bin/cat ${state}/orbctl-bin)
-    if [[ ! -x "$ORBY_ORBCTL" ]]; then
-      echo "Orby: resolved orbctl is missing: $ORBY_ORBCTL" >&2
       exit 1
     fi
     exec ${lib.getExe runner}
@@ -66,9 +61,8 @@ let
       imports = [ /etc/nixos/configuration.nix /etc/nixos/orby/module.nix ];
     }
   '';
-  runnerConfig = pkgs.writeText "orby-runner.json" (
+  runnerConfigTemplate = pkgs.writeText "orby-runner-template.json" (
     builtins.toJSON {
-      orbctl = "";
       machine = name;
       port = cfg.port;
       on-demand = cfg.onDemand.enable;
@@ -124,7 +118,7 @@ let
         "benchmark"
         "big-parallel"
       ];
-      speedFactor = cfg.speedFactor;
+      speedFactor = 1;
     }
   ];
 in
@@ -181,7 +175,7 @@ in
           exit 1
         fi
         /bin/mkdir -p ${state}
-        # The unprivileged runner reads the saved orbctl path in this directory.
+        # The unprivileged runner reads its configuration in this directory.
         # Private keys and the ownership marker themselves stay root-only.
         /bin/chmod 755 ${state}
         if [[ -f ${state}/owner ]]; then
@@ -208,8 +202,6 @@ in
           fi
           /bin/echo "$owner" > ${state}/owner
           /bin/chmod 600 ${state}/owner
-          /bin/echo "$orbctl_bin" > ${state}/orbctl-bin
-          /bin/chmod 644 ${state}/orbctl-bin
           orb create --isolated ${mountFlags} --cpus ${toString cfg.cores} \
             --memory ${toString (builtins.ceil (cfg.memoryMiB / 1024))}G \
             --disk ${lib.escapeShellArg cfg.diskSize} nixos ${name}
@@ -222,8 +214,17 @@ in
           orb run -m ${name} -u root sh -c \
             'printf "%s\n" "$1" > /etc/nixos/orby/identity' sh "$(/bin/cat ${state}/identity)"
         fi
-        /bin/echo "$orbctl_bin" > ${state}/orbctl-bin
-        /bin/chmod 644 ${state}/orbctl-bin
+        # Resolve orbctl at activation, then publish the complete configuration
+        # atomically so launchd never reads a partially written JSON file.
+        config_tmp=$(/usr/bin/mktemp ${runnerConfigFile}.XXXXXX)
+        if ! ${pkgs.jq}/bin/jq --arg orbctl "$orbctl_bin" \
+          '.orbctl = $orbctl' ${runnerConfigTemplate} > "$config_tmp"; then
+          /bin/rm -f "$config_tmp"
+          exit 1
+        fi
+        /bin/chmod 644 "$config_tmp"
+        /bin/mv -f "$config_tmp" ${runnerConfigFile}
+        /bin/rm -f ${state}/orbctl-bin
 
         desired_resources="${toString cfg.cores}:${toString cfg.memoryMiB}:${toString diskGiB}"
         previous_resources=$(/bin/cat ${state}/resources 2>/dev/null || true)
@@ -329,7 +330,6 @@ in
             SockNodeName = "localhost";
             SockServiceName = port;
           };
-          EnvironmentVariables.ORBY_CONFIG_FILE = toString runnerConfig;
         };
       };
     })
@@ -344,11 +344,15 @@ in
             exit 1
           fi
           ${orb}
-          if [[ ! -f ${state}/orbctl-bin ]]; then
-            echo "Orby: missing saved orbctl path; refusing purge" >&2
+          if [[ ! -f ${runnerConfigFile} ]]; then
+            echo "Orby: missing runner configuration; refusing purge" >&2
             exit 1
           fi
-          orbctl_bin=$(/bin/cat ${state}/orbctl-bin)
+          if ! orbctl_bin=$(${pkgs.jq}/bin/jq -er \
+            '.orbctl | select(type == "string" and startswith("/") and length > 1)' ${runnerConfigFile}); then
+            echo "Orby: invalid saved orbctl path; refusing purge" >&2
+            exit 1
+          fi
           if [[ ! -x "$orbctl_bin" ]]; then
             echo "Orby: saved orbctl binary is missing: $orbctl_bin" >&2
             exit 1
@@ -375,27 +379,11 @@ in
       '';
     })
 
-    (lib.mkIf (cfg.enable && !cfg.supportDeterminateNix) {
+    (lib.mkIf cfg.enable {
       nix = {
         distributedBuilds = true;
         inherit buildMachines;
       };
     })
-    (lib.mkIf (cfg.enable && cfg.supportDeterminateNix) (
-      {
-        assertions = [
-          {
-            assertion = config.determinateNix.enable or false;
-            message = "Orby's Determinate Nix support requires determinateNix.enable.";
-          }
-        ];
-      }
-      // lib.optionalAttrs (options ? determinateNix) {
-        determinateNix = {
-          distributedBuilds = true;
-          inherit buildMachines;
-        };
-      }
-    ))
   ];
 }

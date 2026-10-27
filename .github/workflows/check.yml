@@ -11,6 +11,6 @@ jobs:
       - uses: actions/checkout@v6
       - uses: cachix/install-nix-action@v31
       - run: nix flake check --all-systems --no-build
-      - name: Test OrbStack lifecycle
+      - name: Test runner and fake orbctl interaction
         working-directory: pkgs/orby-runner
         run: nix shell nixpkgs#go --command env CGO_ENABLED=0 go test ./...

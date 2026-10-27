@@ -1,4 +1,6 @@
 .direnv/
+!.envrc
+.cache/
 .DS_Store
 .zed/
 result*

@@ -38,10 +38,6 @@
       type = lib.types.port;
       default = 31222;
     };
-    speedFactor = lib.mkOption {
-      type = lib.types.ints.positive;
-      default = 1;
-    };
     guestConfig = lib.mkOption {
       type = lib.types.lines;
       default = "";
@@ -55,11 +51,6 @@
         default = 180;
         description = "Idle time in minutes before the named machine is stopped.";
       };
-    };
-    supportDeterminateNix = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Register the builder with Determinate Nix rather than nix-darwin's Nix.";
     };
   };
 }

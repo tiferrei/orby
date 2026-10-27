@@ -22,12 +22,21 @@
         assert import ./tests/module-eval.nix { inherit self nixpkgs; };
         pkgs.runCommand "orby-module-eval" { } "touch $out";
 
-      devShells.${system}.default = pkgs.mkShellNoCC {
+      devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
           go
           gopls
+          gofumpt
+          jq
           nixfmt
         ];
+        shellHook = ''
+          export GOPATH="$PWD/.cache/go"
+          export GOMODCACHE="$GOPATH/pkg/mod"
+          export GOCACHE="$PWD/.cache/go-build"
+          export GOTOOLCHAIN=local
+          mkdir -p "$GOMODCACHE" "$GOCACHE"
+        '';
       };
       formatter.${system} = pkgs.nixfmt-tree.override {
         settings.formatter.nixfmt.options = [ "--strict" ];
