@@ -4,3 +4,4 @@
 .DS_Store
 .zed/
 result*
+pkgs/orby/target/

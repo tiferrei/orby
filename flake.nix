@@ -22,22 +22,28 @@
         assert import ./tests/module-eval.nix { inherit self nixpkgs; };
         pkgs.runCommand "orby-module-eval" { } "touch $out";
 
-      devShells.${system}.default = pkgs.mkShell {
-        packages = with pkgs; [
-          go
-          gopls
-          gofumpt
-          jq
-          nixfmt
-        ];
-        shellHook = ''
-          export GOPATH="$PWD/.cache/go"
-          export GOMODCACHE="$GOPATH/pkg/mod"
-          export GOCACHE="$PWD/.cache/go-build"
-          export GOTOOLCHAIN=local
-          mkdir -p "$GOMODCACHE" "$GOCACHE"
-        '';
-      };
+      devShells = nixpkgs.lib.genAttrs [ "aarch64-darwin" "aarch64-linux" "x86_64-linux" ] (system: {
+        default =
+          let
+            pkgs = nixpkgs.legacyPackages.${system};
+          in
+          pkgs.mkShell {
+            packages = with pkgs; [
+              cargo
+              rustc
+              rustfmt
+              clippy
+              rust-analyzer
+              nixfmt
+            ];
+            shellHook = ''
+              export CARGO_HOME="$PWD/.cache/cargo"
+              export CARGO_TARGET_DIR="$PWD/.cache/target"
+              export RUSTUP_HOME="$PWD/.cache/rustup"
+              mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR" "$RUSTUP_HOME"
+            '';
+          };
+      });
       formatter.${system} = pkgs.nixfmt-tree.override {
         settings.formatter.nixfmt.options = [ "--strict" ];
       };

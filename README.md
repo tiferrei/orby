@@ -18,8 +18,8 @@ builder while replacing its vfkit/krunkit VM backend with OrbStack.
 Install and start OrbStack under the macOS account that will own the machine.
 The account must be able to run `orbctl` without interaction. By default Orby
 uses the first `orbctl` found in that account's login `PATH` when activating,
-and saves the resolved path in `/var/lib/orby/runner.json` for its runner and
-eventual purge. In a nix-darwin configuration:
+and saves the resolved path in `/var/lib/orby/runner.json` for its Rust service
+and eventual purge. In a nix-darwin configuration:
 
 ```nix
 {
@@ -136,30 +136,39 @@ imported; remove the import only after that switch succeeds.
 
 ## Development
 
-On Apple Silicon macOS, run `nix develop` in this checkout. It supplies Go, a C
-compiler for the Darwin-specific runner and race tests, gopls, gofumpt, and Nix
-tooling; no separate Go installation is needed. Alternatively, if you have
-direnv with nix-direnv and its shell hook enabled, run `direnv allow` once to
-load the same shell through `.envrc`. Go caches stay under the ignored `.cache/`
-directory. OrbStack and `orbctl` must still be installed on the Mac for real
-integration tests.
+On Apple Silicon macOS, run `nix develop` in this checkout. It supplies Rust,
+Cargo, rustfmt, Clippy, rust-analyzer, and Nix tooling. Alternatively, if you
+have direnv with nix-direnv and its shell hook enabled, run `direnv allow` once
+to load the same shell through `.envrc`. Cargo caches stay under the ignored
+`.cache/` directory. OrbStack and `orbctl` must still be installed on the Mac
+for real integration tests. The root-only `orby activate` and `orby purge`
+commands are invoked by nix-darwin; `orby serve` is the unprivileged
+launchd-activated SSH proxy. Do not invoke purge except to disable Orby.
 
 ## Tests
 
-From `pkgs/orby`, run `go test -race ./...` for the unit tests and the
-fake-`orbctl` subprocess tests. On a Mac with OrbStack installed, opt in to a
-real CLI lifecycle test with:
+From `pkgs/orby` on an Apple Silicon Mac with OrbStack and an activated Orby
+machine, run `cargo test --locked`, `cargo fmt --check`, and
+`cargo clippy --locked --all-targets -- -D warnings`. `cargo test` runs the real
+OrbStack tests automatically on macOS; Linux runs only portable tests. The
+macOS tests require the configured OrbStack owner and are not run inside Nix
+build sandboxes. macOS CI installs and starts OrbStack to run the disposable
+machine lifecycle test. The installed-builder/proxy test runs locally on an
+activated Mac; CI compiles it but cannot run it without provisioning Orby and
+its launchd service first.
 
-```sh
-go test -tags=orbctl_integration -run '^TestOrbctlLifecycle$' . -count=1 -v
-```
-
-The opt-in test creates an isolated, uniquely named `orby-test-*` NixOS machine,
+The lifecycle test creates an isolated, uniquely named `orby-test-*` NixOS machine,
 starts and stops it, and deletes it after verifying its identity. It never
 controls `orby`. It may download OrbStack's NixOS distribution and
 leaves the test machine in place if ownership cannot be verified; check the
-test output for its name if cleanup fails. The test stubs the SSH connection,
-so a real builder and activation still require a separate Mac smoke test.
+test output for its name if cleanup fails. The test does not provision SSH;
+a real builder and activation still require a separate Mac smoke test.
+
+The other macOS test checks the installed launchd proxy's SSH banner,
+`Machine::start`, and TCP readiness against the existing `orby` machine. It
+may wake the machine but does not stop or delete it. Pure configuration tests
+and the local TCP half-close regression test remain portable; activation and
+purge are not run automatically because they require root and can delete data.
 
 ## Credits
 

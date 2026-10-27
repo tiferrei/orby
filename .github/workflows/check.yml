@@ -11,14 +11,39 @@ jobs:
       - uses: actions/checkout@v6
       - uses: cachix/install-nix-action@v31
       - run: nix flake check --all-systems --no-build
+      - name: Evaluate module assertions
+        run: nix eval --impure --expr 'let f = builtins.getFlake ("path:" + toString ./.); in import ./tests/module-eval.nix { self = f; nixpkgs = f.inputs.nixpkgs; }'
 
-  runner-tests:
-    runs-on: macos-15-arm
+  portable-tests:
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: pkgs/orby/go.mod
-      - name: Test runner and fake orbctl interaction
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test portable machine and proxy logic
         working-directory: pkgs/orby
-        run: go test -race ./...
+        run: cargo test --locked --lib
+
+  rust-tests:
+    runs-on: macos-15-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install and start OrbStack
+        run: |
+          brew install --cask orbstack
+          orb config set setup.use_admin false
+          orb start
+          orbctl list
+      - name: Test portable logic and compile installed-builder test
+        working-directory: pkgs/orby
+        run: |
+          cargo test --locked --lib
+          cargo test --locked --test orbctl_lifecycle --no-run
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Test real OrbStack machine lifecycle
+        working-directory: pkgs/orby
+        run: cargo test --locked --test orbctl_lifecycle isolated_machine_lifecycle -- --nocapture
